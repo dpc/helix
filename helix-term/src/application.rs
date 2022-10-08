@@ -268,6 +268,7 @@ impl Application {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
+            keymap_config: &self.config.load().keys,
         };
 
         // Acquire mutable access to the redraw_handle lock
@@ -528,6 +529,7 @@ impl Application {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
+            keymap_config: &self.config.load().keys,
         };
         let should_render = self.compositor.handle_event(&Event::IdleTimeout, &mut cx);
         if should_render || self.editor.needs_redraw {
@@ -648,6 +650,7 @@ impl Application {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
+            keymap_config: &self.config.load().keys,
         };
         // Handle key events
         let should_redraw = match event.unwrap() {
