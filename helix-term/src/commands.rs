@@ -1983,7 +1983,7 @@ fn extend_line_impl(cx: &mut Context, extend: Extend) {
         );
 
         // extend to previous/next line if current line is selected
-        let (anchor, head) = if range.from() == start && range.to() == end {
+        let (anchor, head) = if range.from() == start && range.to() == end && range.line_mode {
             match extend {
                 Extend::Above => (end, text.line_to_char(start_line.saturating_sub(count + 1))),
                 Extend::Below => (
@@ -1998,7 +1998,7 @@ fn extend_line_impl(cx: &mut Context, extend: Extend) {
             }
         };
 
-        Range::new(anchor, head)
+        Range::new(anchor, head).with_line_mode(true)
     });
 
     doc.set_selection(view.id, selection);
@@ -2021,6 +2021,7 @@ fn extend_to_line_bounds(cx: &mut Context) {
             } else {
                 Range::new(end, start)
             }
+            .with_line_mode(true)
         }),
     );
 }
