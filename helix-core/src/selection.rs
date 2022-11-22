@@ -56,6 +56,9 @@ pub struct Range {
     /// The previous visual offset (softwrapped lines and columns) from
     /// the start of the line
     pub old_visual_position: Option<(u32, u32)>,
+    /// True if range is intended to contain whole lines (e.g. after `line_extend_below`).
+    /// Useful to prevent first `line_extend_below` on an empty line selecting the next line.
+    pub line_mode: bool,
 }
 
 impl Range {
@@ -64,6 +67,7 @@ impl Range {
             anchor,
             head,
             old_visual_position: None,
+            line_mode: false,
         }
     }
 
@@ -130,6 +134,7 @@ impl Range {
             anchor: self.head,
             head: self.anchor,
             old_visual_position: self.old_visual_position,
+            line_mode: self.line_mode,
         }
     }
 
@@ -188,6 +193,7 @@ impl Range {
             anchor,
             head,
             old_visual_position: None,
+            line_mode: false,
         }
     }
 
@@ -201,12 +207,14 @@ impl Range {
                 anchor: self.anchor.min(from),
                 head: self.head.max(to),
                 old_visual_position: None,
+                line_mode: self.line_mode,
             }
         } else {
             Self {
                 anchor: self.anchor.max(to),
                 head: self.head.min(from),
                 old_visual_position: None,
+                line_mode: self.line_mode,
             }
         }
     }
@@ -222,12 +230,14 @@ impl Range {
                 anchor: self.anchor.max(other.anchor),
                 head: self.head.min(other.head),
                 old_visual_position: None,
+                line_mode: self.line_mode || other.line_mode,
             }
         } else {
             Range {
                 anchor: self.from().min(other.from()),
                 head: self.to().max(other.to()),
                 old_visual_position: None,
+                line_mode: self.line_mode || other.line_mode,
             }
         }
     }
@@ -286,6 +296,7 @@ impl Range {
             } else {
                 None
             },
+            line_mode: self.line_mode,
         }
     }
 
@@ -309,6 +320,7 @@ impl Range {
                 anchor: self.anchor,
                 head: next_grapheme_boundary(slice, self.head),
                 old_visual_position: self.old_visual_position,
+                line_mode: self.line_mode,
             }
         } else {
             *self
@@ -373,6 +385,11 @@ impl Range {
         let second = graphemes.next();
         first.is_some() && second.is_none()
     }
+
+    pub fn with_line_mode(mut self, line_mode: bool) -> Self {
+        self.line_mode = line_mode;
+        self
+    }
 }
 
 impl From<(usize, usize)> for Range {
@@ -381,6 +398,7 @@ impl From<(usize, usize)> for Range {
             anchor,
             head,
             old_visual_position: None,
+            line_mode: false,
         }
     }
 }
@@ -485,6 +503,7 @@ impl Selection {
                 anchor,
                 head,
                 old_visual_position: None
+                line_mode: false,
             }],
             primary_index: 0,
         }
