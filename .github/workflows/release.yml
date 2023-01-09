@@ -58,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false # don't fail other jobs if one fails
       matrix:
-        build: [x86_64-linux, x86_64-macos, x86_64-windows] #, x86_64-win-gnu, win32-msvc
+        build: [x86_64-linux] #, x86_64-win-gnu, win32-msvc
         include:
         - build: x86_64-linux
           os: ubuntu-latest
@@ -70,36 +70,6 @@ jobs:
           rust: stable
           target: aarch64-unknown-linux-gnu
           cross: true
-        # - build: riscv64-linux
-        #   os: ubuntu-latest
-        #   rust: stable
-        #   target: riscv64gc-unknown-linux-gnu
-        #   cross: true
-        - build: x86_64-macos
-          os: macos-latest
-          rust: stable
-          target: x86_64-apple-darwin
-          cross: false
-        - build: x86_64-windows
-          os: windows-latest
-          rust: stable
-          target: x86_64-pc-windows-msvc
-          cross: false
-        # 23.03: build issues
-        - build: aarch64-macos
-          os: macos-latest
-          rust: stable
-          target: aarch64-apple-darwin
-          cross: false
-          skip_tests: true  # x86_64 host can't run aarch64 code
-        # - build: x86_64-win-gnu
-        #   os: windows-2019
-        #   rust: stable-x86_64-gnu
-        #   target: x86_64-pc-windows-gnu
-        # - build: win32-msvc
-        #   os: windows-2019
-        #   rust: stable
-        #   target: i686-pc-windows-msvc
 
     steps:
       - name: Checkout sources
@@ -158,54 +128,6 @@ jobs:
       - name: Build release binary
         run: ${{ env.CARGO }} build --release --locked --target ${{ matrix.target }}
 
-      - name: Build AppImage
-        shell: bash
-        if: matrix.build == 'x86_64-linux'
-        run: |
-          # Required as of 22.x https://github.com/AppImage/AppImageKit/wiki/FUSE
-          sudo add-apt-repository universe
-          sudo apt install libfuse2
-
-          mkdir dist
-
-          name=dev
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
-            name=${GITHUB_REF:10}
-          fi
-
-          build="${{ matrix.build }}"
-
-          export VERSION="$name"
-          export ARCH=${build%-linux}
-          export APP=helix
-          export OUTPUT="helix-$VERSION-$ARCH.AppImage"
-          export UPDATE_INFORMATION="gh-releases-zsync|$GITHUB_REPOSITORY_OWNER|helix|latest|$APP-*-$ARCH.AppImage.zsync"
-
-          mkdir -p "$APP.AppDir"/usr/{bin,lib/helix}
-
-          cp "target/${{ matrix.target }}/release/hx" "$APP.AppDir/usr/bin/hx"
-          rm -rf runtime/grammars/sources
-          cp -r runtime "$APP.AppDir/usr/lib/helix/runtime"
-
-          cat << 'EOF' > "$APP.AppDir/AppRun"
-          #!/bin/sh
-
-          APPDIR="$(dirname "$(readlink -f "${0}")")"
-          HELIX_RUNTIME="$APPDIR/usr/lib/helix/runtime" exec "$APPDIR/usr/bin/hx" "$@"
-          EOF
-          chmod 755 "$APP.AppDir/AppRun"
-
-          curl -Lo linuxdeploy-x86_64.AppImage \
-              https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          chmod +x linuxdeploy-x86_64.AppImage
-
-          ./linuxdeploy-x86_64.AppImage \
-              --appdir "$APP.AppDir" -d contrib/Helix.desktop \
-              -i contrib/helix.png --output appimage
-
-          mv "$APP-$VERSION-$ARCH.AppImage" \
-              "$APP-$VERSION-$ARCH.AppImage.zsync" dist
-
       - name: Build archive
         shell: bash
         run: |
@@ -262,10 +184,6 @@ jobs:
               mv bins-$platform/runtime $pkgname/
               mv bins-$platform/hx$exe $pkgname
               chmod +x $pkgname/hx$exe
-
-              if [[ "$platform" = "x86_64-linux" ]]; then
-                  mv bins-$platform/helix-*.AppImage* dist/
-              fi
 
               if [ "$exe" = "" ]; then
                   tar cJf dist/$pkgname.tar.xz $pkgname
