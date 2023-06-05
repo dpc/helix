@@ -356,12 +356,13 @@ remapping].
 
 [Key remapping]: ./keymap.md
 
-### `[keys]` Section
+### `[keys.supertab]` Section
 
 
 | Key        | Description | Default |
 |------------|-------------|---------|
-| `supertab` | If set to a command name, then when the cursor is in a position with non-whitespace to its left, instead of inserting a tab, it will run the given command. If there is only whitespace to the left, then it inserts a tab as normal. One can emulate a tabout behavior with this with the `move_parent_node_end` command. See [Tabout Example] | `None` |
+| `command` | If set to a command name, then when the cursor is in a position with non-whitespace to its left, instead of inserting a tab, it will run the given command. If there is only whitespace to the left, then it inserts a tab as normal. One can emulate a tabout behavior with this with the `move_parent_node_end` command. See [Tabout Example] | `None` |
+| `supercede_menu` | Normally, when a menu is on screen, such as when auto complete is triggered, the tab key is bound to cycling through the items. This means when menus are on screen, one cannot use the tab key to trigger the supertab command. If this option is set to true, the supertab command always takes precedence, which means one cannot use the tab key to cycle through menu items. One of the other bindings must be used instead, such as arrow keys or `C-n`/`C-p`. | `None` |
 
 [Tabout Example]: #tabout-example
 
@@ -379,8 +380,8 @@ Note that without a terminal that supports the
 with the default binding for `jump_forward`. `go` and `gi` are an alternative.
 
 ```toml
-[keys]
-supertab = "move_parent_node_end"
+[keys.supertab]
+command = "move_parent_node_end"
 
 [keys.normal]
 tab = "move_parent_node_end"

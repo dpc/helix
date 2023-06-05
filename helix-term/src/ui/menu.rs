@@ -2,6 +2,7 @@ use std::{borrow::Cow, path::PathBuf};
 
 use crate::{
     compositor::{Callback, Component, Compositor, Context, Event, EventResult},
+    config::SupertabConfig,
     ctrl, key, shift,
 };
 use tui::{buffer::Buffer as Surface, widgets::Table};
@@ -246,6 +247,21 @@ impl<T: Item + 'static> Component for Menu<T> {
             // remove the layer
             compositor.pop();
         }));
+
+        // Ignore tab key when supertab is turned on in order not to interfere
+        // with it. (Is there a better way to do this?)
+        if (event == key!(Tab) || event == shift!(Tab))
+            && cx.editor.config().auto_completion
+            && matches!(
+                cx.keymap_config.supertab,
+                Some(SupertabConfig {
+                    command: Some(_),
+                    supercede_menu: true
+                })
+            )
+        {
+            return EventResult::Ignored(None);
+        }
 
         match event {
             // esc or ctrl-c aborts the completion and closes the menu

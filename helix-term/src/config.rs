@@ -28,7 +28,7 @@ pub struct ConfigRaw {
 pub struct KeymapConfig {
     /// An alternative command to run when tab is pressed and the cursor has
     /// text other than whitespace to its left on the current line.
-    pub supertab: Option<MappableCommand>,
+    pub supertab: Option<SupertabConfig>,
 
     #[serde(flatten)]
     pub bindings: HashMap<Mode, KeyTrie>,
@@ -41,6 +41,14 @@ impl Default for KeymapConfig {
             bindings: keymap::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+pub struct SupertabConfig {
+    pub command: Option<MappableCommand>,
+
+    #[serde(default)]
+    pub supercede_menu: bool,
 }
 
 #[derive(Debug)]

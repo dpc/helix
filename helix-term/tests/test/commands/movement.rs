@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use helix_core::hashmap;
 use helix_term::commands::MappableCommand;
-use helix_term::config::KeymapConfig;
+use helix_term::config::{KeymapConfig, SupertabConfig};
 use helix_term::keymap;
 use helix_view::document::Mode;
 
@@ -484,7 +484,12 @@ async fn test_supertab_move_parent_node_end() -> anyhow::Result<()> {
                 .with_file("foo.rs", None)
                 .with_config(Config {
                     keys: KeymapConfig {
-                        supertab: Some(MappableCommand::from_str("move_parent_node_end").unwrap()),
+                        supertab: Some(SupertabConfig {
+                            command: Some(
+                                MappableCommand::from_str("move_parent_node_end").unwrap(),
+                            ),
+                            ..Default::default()
+                        }),
                         ..Default::default()
                     },
                     ..helpers::test_config()

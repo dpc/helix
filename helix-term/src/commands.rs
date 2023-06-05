@@ -3279,6 +3279,8 @@ fn hunk_range(hunk: Hunk, text: RopeSlice) -> Range {
 }
 
 pub mod insert {
+    use crate::config::SupertabConfig;
+
     use super::*;
     pub type Hook = fn(&Rope, &Selection, char) -> Option<Transaction>;
     pub type PostHook = fn(&mut Context, char);
@@ -3417,7 +3419,11 @@ pub mod insert {
         let (view, doc) = current_ref!(cx.editor);
         let view_id = view.id;
 
-        if let Some(ref cmd) = cx.keymap_config.supertab {
+        if let Some(SupertabConfig {
+            command: Some(ref cmd),
+            ..
+        }) = cx.keymap_config.supertab
+        {
             let cursors_after_whitespace = doc.selection(view_id).ranges().iter().all(|range| {
                 let cursor = range.cursor(doc.text().slice(..));
                 let current_line_num = doc.text().char_to_line(cursor);
