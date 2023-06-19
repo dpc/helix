@@ -369,6 +369,7 @@ impl MappableCommand {
         extend_to_line_end, "Extend to line end",
         extend_to_line_end_newline, "Extend to line end",
         signature_help, "Show signature help",
+        supertab, "Insert tab if all cursors have all whitespace to their left; otherwise, run a separate command.",
         insert_tab, "Insert tab char",
         insert_newline, "Insert newline char",
         delete_char_backward, "Delete previous char",
@@ -3415,7 +3416,7 @@ pub mod insert {
         }
     }
 
-    pub fn insert_tab(cx: &mut Context) {
+    pub fn supertab(cx: &mut Context) {
         let (view, doc) = current_ref!(cx.editor);
         let view_id = view.id;
 
@@ -3429,7 +3430,6 @@ pub mod insert {
                 let current_line_num = doc.text().char_to_line(cursor);
                 let current_line_start = doc.text().line_to_char(current_line_num);
                 let left = doc.text().slice(current_line_start..cursor);
-                log::debug!("left: {:?}", left);
                 left.chars().all(|c| c.is_whitespace())
             });
 
@@ -3439,6 +3439,10 @@ pub mod insert {
             }
         }
 
+        insert_tab(cx);
+    }
+
+    pub fn insert_tab(cx: &mut Context) {
         let (view, doc) = current!(cx.editor);
 
         // TODO: round out to nearest indentation level (for example a line with 3 spaces should
@@ -3446,9 +3450,10 @@ pub mod insert {
         let indent = Tendril::from(doc.indent_style.as_str());
         let transaction = Transaction::insert(
             doc.text(),
-            &doc.selection(view_id).clone().cursors(doc.text().slice(..)),
+            &doc.selection(view.id).clone().cursors(doc.text().slice(..)),
             indent,
         );
+
         doc.apply(&transaction, view.id);
     }
 

@@ -476,6 +476,28 @@ async fn test_supertab_move_parent_node_end() -> anyhow::Result<()> {
                 }
             "}),
         ),
+        // Ctrl-tab always inserts a tab
+        (
+            helpers::platform_line(indoc! {"\
+                fn foo() {
+                    let result = if true {
+                        #[\"yes\"\n|]#
+                    } else {
+                        \"no#(\"\n|)#
+                    }
+                }
+            "}),
+            "i<C-tab>",
+            helpers::platform_line(indoc! {"\
+                fn foo() {
+                    let result = if true {
+                            #[|\"yes\"\n]#
+                    } else {
+                        \"no    #(|\"\n)#
+                    }
+                }
+            "}),
+        ),
     ];
 
     for test in tests {
