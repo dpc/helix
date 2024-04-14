@@ -231,7 +231,7 @@ fn reset_pos<A, M>(layers: &[Layer<A, M>], pos: usize, get_pos: impl Fn(&A) -> u
 /// makes the lifetime invariant if implemented with safe code. This makes the
 /// DocFormatter API very cumbersome/basically impossible to work with.
 ///
-/// Normally object types dyn Foo + 'a are covariant so if we used Box<dyn LineAnnotation + 'a> below
+/// Normally object types `dyn Foo + 'a` are covariant so if we used `Box<dyn LineAnnotation + 'a>` below
 /// everything would be alright. However we want to use `Cell<Box<dyn LineAnnotation + 'a>>`
 /// to be able to call the mutable function on `LineAnnotation`. The problem is that
 /// some types like `Cell` make all their arguments invariant. This is important for soundness
