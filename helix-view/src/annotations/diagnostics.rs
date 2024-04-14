@@ -136,7 +136,7 @@ impl<'a> InlineDiagnosticAccumulator<'a> {
         horizontal_off: usize,
     ) -> bool {
         // TODO: doing the cursor tracking here works well but is somewhat
-        // duplicate effort/tedious maybe centrilize this somehwere?
+        // duplicate effort/tedious maybe centralize this somehwere?
         // In the DocFormatter?
         if grapheme.char_idx == self.cursor {
             self.cursor_line = true;
