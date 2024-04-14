@@ -114,7 +114,7 @@ impl Overlay {
 /// which complicates APIs a lot.
 pub trait LineAnnotation {
     /// Resets the internal position to `char_idx`. This function is called
-    /// when a new transveral of a document starts.
+    /// when a new traversal of a document starts.
     ///
     /// All `char_idx` passed to `insert_virtual_lines` are strictly monotonically increasing
     /// with the first `char_idx` greater or equal to the `char_idx`
