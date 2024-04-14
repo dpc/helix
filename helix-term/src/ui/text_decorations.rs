@@ -10,7 +10,7 @@ pub use diagnostics::InlineDiagnostics;
 
 mod diagnostics;
 
-/// Decorations are the primary mechanisim for extending the text rendering.
+/// Decorations are the primary mechanism for extending the text rendering.
 ///
 /// Any on-screen element which is anchored to the rendered text in some form
 /// should be implemented using this trait. Translating char positions to
