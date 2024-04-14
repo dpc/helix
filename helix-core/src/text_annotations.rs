@@ -243,11 +243,11 @@ fn reset_pos<A, M>(layers: &[Layer<A, M>], pos: usize, get_pos: impl Fn(&A) -> u
 /// (or other invariant types like `UnsafeCell` or `*mut (dyn Foo + 'a)`).
 ///
 /// We sidestep the problem by using `NonNull` which is covariant. In the
-/// specical case of trait objects this is sound (easily checked by adding a
-/// `PhantomData<&'a mut Foo + 'a)>` field). We don't need an explicit Cell
+/// special case of trait objects this is sound (easily checked by adding a
+/// `PhantomData<&'a mut Foo + 'a)>` field). We don't need an explicit `Cell`
 /// type here because we never hand out any refereces to the trait objects. That
 /// means any reference to the pointer can create a valid multable reference
-/// that is covariant over 'a (or in other words it's a raw pointer, as long as
+/// that is covariant over `'a` (or in other words it's a raw pointer, as long as
 /// we don't hand out references we are free to do whatever we want).
 struct RawBox<T: ?Sized>(NonNull<T>);
 
