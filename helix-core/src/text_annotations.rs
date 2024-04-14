@@ -128,8 +128,8 @@ pub trait LineAnnotation {
         usize::MAX
     }
 
-    /// Called when a text is concealed that contains an anchor registered by this `LineAnnotation`
-    ///. In this case the line decorations  **must** ensure that virtual text anchored within that
+    /// Called when a text is concealed that contains an anchor registered by this `LineAnnotation`.
+    /// In this case the line decorations  **must** ensure that virtual text anchored within that
     /// char range is skipped.
     ///
     /// # Returns
