@@ -235,11 +235,11 @@ fn reset_pos<A, M>(layers: &[Layer<A, M>], pos: usize, get_pos: impl Fn(&A) -> u
 /// everything would be alright. However we want to use `Cell<Box<dyn LineAnnotation + 'a>>`
 /// to be able to call the mutable function on `LineAnnotation`. The problem is that
 /// some types like `Cell` make all their arguments invariant. This is important for soundness
-/// normally for the same reasons that &'a mut T is invariant over T
-/// (see <https://doc.rust-lang.org/nomicon/subtyping.html>). However for &'a mut (dyn Foo + 'b)
-/// there is a specical rule in the language to make 'b covariant (otherwise trait objects would be
+/// normally for the same reasons that `&'a mut T` is invariant over `T`
+/// (see <https://doc.rust-lang.org/nomicon/subtyping.html>). However for `&'a mut` (`dyn Foo + 'b`)
+/// there is a specical rule in the language to make `'b` covariant (otherwise trait objects would be
 /// super annoying to use). See  <https://users.rust-lang.org/t/solved-variance-of-dyn-trait-a> for
-/// why this is sound. Sadly that rule doesn't apply to Cell<Box<(dyn Foo + 'a)>
+/// why this is sound. Sadly that rule doesn't apply to `Cell<Box<(dyn Foo + 'a)>`
 /// (or other invariant types like `UnsafeCell` or `*mut (dyn Foo + 'a)`).
 ///
 /// We sidestep the problem by using `NonNull` which is covariant. In the
