@@ -159,8 +159,8 @@ pub trait LineAnnotation {
     ///
     /// # Note
     ///
-    /// The `line_end_visual_pos` paramater indiciates the visual vertical distance
-    /// from the start of block where the transversal start.  This includes the offset
+    /// The `line_end_visual_pos` parameter indicates the visual vertical distance
+    /// from the start of block where the traversal starts.  This includes the offset
     /// from other `LineAnnotations`. This allows inline annotations to consider
     /// the height of the text and "align" two different documents (like for side
     /// by side diffs).  These annotations that want to "align" two documents should
