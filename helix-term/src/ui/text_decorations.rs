@@ -29,8 +29,8 @@ pub trait Decoration {
     /// This function is called before text is rendered as any decorations should
     /// never overlap the document text. That means that setting the forground color
     /// here is (essentially) useless as the text color is overwritten by the
-    /// rendered text. This -ofcourse- doesn't apply when rendering inside virtual lines
-    /// below the line reserved by `LineAnnotation`s. e as no text will be rendered here.
+    /// rendered text. This _of course_ doesn't apply when rendering inside virtual lines
+    /// below the line reserved by `LineAnnotation`s as no text will be rendered here.
     fn decorate_line(&mut self, _renderer: &mut TextRenderer, _pos: LinePos) {}
 
     /// Called **after** a **visual** line is rendered. A visual line does not
