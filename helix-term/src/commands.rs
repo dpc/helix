@@ -3125,10 +3125,11 @@ fn insert_mode(cx: &mut Context) {
         doc.text().to_string()
     );
 
+    // Collapse selection to cursor at start
     let selection = doc
         .selection(view.id)
         .clone()
-        .transform(|range| Range::new(range.to(), range.from()));
+        .transform(|range| Range::point(range.from()));
 
     doc.set_selection(view.id, selection);
 }
@@ -3138,29 +3139,10 @@ fn append_mode(cx: &mut Context) {
     enter_insert_mode(cx);
     let (view, doc) = current!(cx.editor);
     doc.restore_cursor = true;
-    let text = doc.text().slice(..);
 
-    // Make sure there's room at the end of the document if the last
-    // selection butts up against it.
-    let end = text.len_chars();
-    let last_range = doc
-        .selection(view.id)
-        .iter()
-        .last()
-        .expect("selection should always have at least one range");
-    if !last_range.is_empty() && last_range.to() == end {
-        let transaction = Transaction::change(
-            doc.text(),
-            [(end, end, Some(doc.line_ending.as_str().into()))].into_iter(),
-        );
-        doc.apply(&transaction, view.id);
-    }
-
+    // Collapse selection to cursor at end
     let selection = doc.selection(view.id).clone().transform(|range| {
-        Range::new(
-            range.from(),
-            graphemes::next_grapheme_boundary(doc.text().slice(..), range.to()),
-        )
+        Range::point(range.to())
     });
     doc.set_selection(view.id, selection);
 }
