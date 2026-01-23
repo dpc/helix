@@ -750,11 +750,55 @@ fn move_impl(cx: &mut Context, move_fn: MoveFn, dir: Direction, behaviour: Movem
 use helix_core::movement::{move_horizontally, move_vertically};
 
 fn move_char_left(cx: &mut Context) {
-    move_impl(cx, move_horizontally, Direction::Backward, Movement::Move)
+    // Move left and select the character we moved over
+    let count = cx.count();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let text_fmt = doc.text_format(view.inner_area(doc).width, None);
+    let mut annotations = view.text_annotations(doc, None);
+
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let pos = range.cursor(text);
+        let new_pos = move_horizontally(
+            text,
+            range,
+            Direction::Backward,
+            count,
+            Movement::Move,
+            &text_fmt,
+            &mut annotations,
+        ).cursor(text);
+        // Select the character we moved over, with cursor (head) at new position
+        Range::new(pos, new_pos)
+    });
+    drop(annotations);
+    doc.set_selection(view.id, selection);
 }
 
 fn move_char_right(cx: &mut Context) {
-    move_impl(cx, move_horizontally, Direction::Forward, Movement::Move)
+    // Move right and select the character we moved over
+    let count = cx.count();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let text_fmt = doc.text_format(view.inner_area(doc).width, None);
+    let mut annotations = view.text_annotations(doc, None);
+
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let pos = range.cursor(text);
+        let new_pos = move_horizontally(
+            text,
+            range,
+            Direction::Forward,
+            count,
+            Movement::Move,
+            &text_fmt,
+            &mut annotations,
+        ).cursor(text);
+        // Select the character we moved over (from old pos to new_pos)
+        Range::new(pos, new_pos)
+    });
+    drop(annotations);
+    doc.set_selection(view.id, selection);
 }
 
 fn move_line_up(cx: &mut Context) {
