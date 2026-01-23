@@ -63,7 +63,8 @@ pub enum CursorKind {
 
 impl Default for CursorKind {
     fn default() -> Self {
-        Self::Block
+        // Use beam cursor by default for GUI-like selection behavior
+        Self::Bar
     }
 }
 

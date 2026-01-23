@@ -267,8 +267,9 @@ pub fn move_prev_paragraph(
     count: usize,
     behavior: Movement,
 ) -> Range {
+    let cursor_pos = range.cursor(slice);
     let mut line = range.cursor_line(slice);
-    let first_char = slice.line_to_char(line) == range.cursor(slice);
+    let first_char = slice.line_to_char(line) == cursor_pos;
     let prev_line_empty = rope_is_line_ending(slice.line(line.saturating_sub(1)));
     let curr_line_empty = rope_is_line_ending(slice.line(line));
     let prev_empty_to_line = prev_line_empty && !curr_line_empty;
@@ -296,12 +297,8 @@ pub fn move_prev_paragraph(
 
     let head = slice.line_to_char(line);
     let anchor = if behavior == Movement::Move {
-        // exclude first character after paragraph boundary
-        if prev_empty_to_line && first_char {
-            range.cursor(slice)
-        } else {
-            range.head
-        }
+        // With beam cursor, move creates selection from cursor (head) to new position
+        cursor_pos
     } else {
         range.put_cursor(slice, head, true).anchor
     };
@@ -314,9 +311,10 @@ pub fn move_next_paragraph(
     count: usize,
     behavior: Movement,
 ) -> Range {
+    let cursor_pos = range.cursor(slice);
     let mut line = range.cursor_line(slice);
     let last_char =
-        prev_grapheme_boundary(slice, slice.line_to_char(line + 1)) == range.cursor(slice);
+        prev_grapheme_boundary(slice, slice.line_to_char(line + 1)) == cursor_pos;
     let curr_line_empty = rope_is_line_ending(slice.line(line));
     let next_line_empty =
         rope_is_line_ending(slice.line(slice.len_lines().saturating_sub(1).min(line + 1)));
@@ -342,11 +340,8 @@ pub fn move_next_paragraph(
     }
     let head = slice.line_to_char(line);
     let anchor = if behavior == Movement::Move {
-        if curr_empty_to_line && last_char {
-            range.head
-        } else {
-            range.cursor(slice)
-        }
+        // With beam cursor, move creates selection from cursor (head) to new position
+        cursor_pos
     } else {
         range.put_cursor(slice, head, true).anchor
     };
@@ -2029,20 +2024,21 @@ mod test {
 
     #[test]
     fn test_behaviour_when_moving_to_prev_paragraph_single() {
+        // With beam cursor semantics, use zero-width ranges
         let tests = [
             ("#[|]#", "#[|]#"),
-            ("#[s|]#tart at\nfirst char\n", "#[|s]#tart at\nfirst char\n"),
-            ("start at\nlast char#[\n|]#", "#[|start at\nlast char\n]#"),
+            ("s#[|]#tart at\nfirst char\n", "#[|s]#tart at\nfirst char\n"),
+            ("start at\nlast char\n#[|]#", "#[|start at\nlast char\n]#"),
             (
-                "goto\nfirst\n\n#[p|]#aragraph",
+                "goto\nfirst\n\np#[|]#aragraph",
+                "goto\nfirst\n\n#[|p]#aragraph",
+            ),
+            (
+                "goto\nfirst\n\n#[|]#paragraph",
                 "#[|goto\nfirst\n\n]#paragraph",
             ),
             (
-                "goto\nfirst\n#[\n|]#paragraph",
-                "#[|goto\nfirst\n\n]#paragraph",
-            ),
-            (
-                "goto\nsecond\n\np#[a|]#ragraph",
+                "goto\nsecond\n\npa#[|]#ragraph",
                 "goto\nsecond\n\n#[|pa]#ragraph",
             ),
             (
@@ -2063,13 +2059,14 @@ mod test {
 
     #[test]
     fn test_behaviour_when_moving_to_prev_paragraph_double() {
+        // With beam cursor semantics, use zero-width ranges
         let tests = [
             (
-                "on#[e|]#\n\ntwo\n\nthree\n\n",
+                "one#[|]#\n\ntwo\n\nthree\n\n",
                 "#[|one]#\n\ntwo\n\nthree\n\n",
             ),
             (
-                "one\n\ntwo\n\nth#[r|]#ee\n\n",
+                "one\n\ntwo\n\nthr#[|]#ee\n\n",
                 "one\n\n#[|two\n\nthr]#ee\n\n",
             ),
         ];
@@ -2109,32 +2106,36 @@ mod test {
 
     #[test]
     fn test_behaviour_when_moving_to_next_paragraph_single() {
+        // With beam cursor semantics, cursor positions are zero-width ranges
+        // and movements create selections from cursor to new position
         let tests = [
             ("#[|]#", "#[|]#"),
-            ("#[s|]#tart at\nfirst char\n", "#[start at\nfirst char\n|]#"),
-            ("start at\nlast char#[\n|]#", "start at\nlast char#[\n|]#"),
+            // Cursor at position 0, move to end of paragraph
+            ("#[|]#start at\nfirst char\n", "#[start at\nfirst char\n|]#"),
+            // Cursor at end of document, no movement
+            ("start at\nlast char\n#[|]#", "start at\nlast char\n#[|]#"),
             (
-                "a\nb\n\n#[g|]#oto\nthird\n\nparagraph",
+                "a\nb\n\n#[|]#goto\nthird\n\nparagraph",
                 "a\nb\n\n#[goto\nthird\n\n|]#paragraph",
             ),
             (
-                "a\nb\n#[\n|]#goto\nthird\n\nparagraph",
-                "a\nb\n\n#[goto\nthird\n\n|]#paragraph",
+                "a\nb\n#[|]#goto\nthird\n\nparagraph",
+                "a\nb\n#[goto\nthird\n\n|]#paragraph",
             ),
             (
-                "a\nb#[\n|]#\n\ngoto\nsecond\n\nparagraph",
+                "a\nb#[|]#\n\ngoto\nsecond\n\nparagraph",
                 "a\nb#[\n\n|]#goto\nsecond\n\nparagraph",
             ),
             (
-                "here\n\nhave\n#[m|]#ultiple\nparagraph\n\n\n\n\n",
+                "here\n\nhave\n#[|]#multiple\nparagraph\n\n\n\n\n",
                 "here\n\nhave\n#[multiple\nparagraph\n\n\n\n\n|]#",
             ),
             (
-                "#[t|]#ext\n\n\nafter two blank lines\n\nmore text\n",
+                "#[|]#text\n\n\nafter two blank lines\n\nmore text\n",
                 "#[text\n\n\n|]#after two blank lines\n\nmore text\n",
             ),
             (
-                "#[text\n\n\n|]#after two blank lines\n\nmore text\n",
+                "text\n\n\n#[|]#after two blank lines\n\nmore text\n",
                 "text\n\n\n#[after two blank lines\n\n|]#more text\n",
             ),
         ];
@@ -2151,13 +2152,14 @@ mod test {
 
     #[test]
     fn test_behaviour_when_moving_to_next_paragraph_double() {
+        // With beam cursor semantics, use zero-width ranges
         let tests = [
             (
-                "one\n\ntwo\n\nth#[r|]#ee\n\n",
+                "one\n\ntwo\n\nth#[|]#ree\n\n",
                 "one\n\ntwo\n\nth#[ree\n\n|]#",
             ),
             (
-                "on#[e|]#\n\ntwo\n\nthree\n\n",
+                "on#[|]#e\n\ntwo\n\nthree\n\n",
                 "on#[e\n\ntwo\n\n|]#three\n\n",
             ),
         ];

@@ -2874,14 +2874,27 @@ enum YankAction {
 
 fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
     let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
 
     let selection = doc.selection(view.id);
     let only_whole_lines = selection_is_linewise(selection, doc.text());
 
     if cx.register != Some('_') && matches!(yank, YankAction::Yank) {
-        // yank the selection
-        let text = doc.text().slice(..);
-        let values: Vec<String> = selection.fragments(text).map(Cow::into_owned).collect();
+        // yank the selection (or the character after cursor for empty selections)
+        let values: Vec<String> = selection
+            .iter()
+            .map(|range| {
+                let (from, to) = if range.from() == range.to() {
+                    // Empty selection: yank character after cursor
+                    let start = range.from();
+                    let end = next_grapheme_boundary(text, start);
+                    (start, end)
+                } else {
+                    (range.from(), range.to())
+                };
+                text.slice(from..to).to_string()
+            })
+            .collect();
         let reg_name = cx
             .register
             .unwrap_or_else(|| cx.editor.config.load().default_yank_register);
@@ -2891,9 +2904,17 @@ fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
         }
     }
 
-    // delete the selection
-    let transaction =
-        Transaction::delete_by_selection(doc.text(), selection, |range| (range.from(), range.to()));
+    // delete the selection (or character after cursor for empty selections)
+    let transaction = Transaction::delete_by_selection(doc.text(), selection, |range| {
+        if range.from() == range.to() {
+            // Empty selection: delete character after cursor
+            let start = range.from();
+            let end = next_grapheme_boundary(text, start);
+            (start, end)
+        } else {
+            (range.from(), range.to())
+        }
+    });
     doc.apply(&transaction, view.id);
 
     match op {
