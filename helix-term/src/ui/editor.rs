@@ -15,7 +15,7 @@ use crate::{
 
 use helix_core::{
     diagnostic::NumberOrString,
-    graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
+    graphemes::next_grapheme_boundary,
     movement::Direction,
     syntax::{self, OverlayHighlights},
     text_annotations::TextAnnotations,
@@ -154,7 +154,7 @@ impl EditorView {
             if let Some(tabstops) = Self::tabstop_highlights(doc, theme) {
                 overlays.push(tabstops);
             }
-            overlays.push(Self::doc_selection_highlights(
+            overlays.extend(Self::doc_selection_highlights(
                 editor.mode(),
                 doc,
                 view,
@@ -523,6 +523,12 @@ impl EditorView {
     }
 
     /// Get highlight spans for selections in a document view.
+    ///
+    /// With beam cursor semantics:
+    /// - The primary cursor is drawn by the terminal (for Bar/Underline) or manually (for Block)
+    /// - Selections are rendered as highlighted spans between anchor and head
+    /// - Secondary cursors are marked with cursor highlighting (since terminal can only show one cursor)
+    /// - Zero-width selections (cursor only, anchor == head) show just the cursor marker
     pub fn doc_selection_highlights(
         mode: Mode,
         doc: &Document,
@@ -530,7 +536,7 @@ impl EditorView {
         theme: &Theme,
         cursor_shape_config: &CursorShapeConfig,
         is_terminal_focused: bool,
-    ) -> OverlayHighlights {
+    ) -> Vec<OverlayHighlights> {
         let text = doc.text().slice(..);
         let selection = doc.selection(view.id);
         let primary_idx = selection.primary_index();
@@ -566,7 +572,11 @@ impl EditorView {
         }
         .unwrap_or(base_primary_cursor_scope);
 
-        let mut spans = Vec::new();
+        // Use separate overlay collections for selections and cursors to avoid
+        // overlap issues in the Heterogenous overlay (which requires non-overlapping spans)
+        let mut selection_spans = Vec::new();
+        let mut cursor_spans = Vec::new();
+
         for (i, range) in selection.iter().enumerate() {
             let selection_is_primary = i == primary_idx;
             let (cursor_scope, selection_scope) = if selection_is_primary {
@@ -575,58 +585,57 @@ impl EditorView {
                 (cursor_scope, selection_scope)
             };
 
-            // Special-case: cursor at end of the rope.
-            if range.head == range.anchor && range.head == text.len_chars() {
-                if !selection_is_primary || (cursor_is_block && is_terminal_focused) {
-                    // Bar and underline cursors are drawn by the terminal
-                    // BUG: If the editor area loses focus while having a bar or
-                    // underline cursor (eg. when a regex prompt has focus) then
-                    // the primary cursor will be invisible. This doesn't happen
-                    // with block cursors since we manually draw *all* cursors.
-                    spans.push((cursor_scope, range.head..range.head + 1));
-                }
-                continue;
+            // For beam cursor semantics, the selection is simply from anchor to head
+            let sel_start = range.from();
+            let sel_end = range.to();
+
+            // Handle the selection highlighting (if there is a selection)
+            if sel_start != sel_end {
+                selection_spans.push((selection_scope, sel_start..sel_end));
             }
 
-            let range = range.min_width_1(text);
-            if range.head > range.anchor {
-                // Standard case.
-                let cursor_start = prev_grapheme_boundary(text, range.head);
-                // non block cursors look like they exclude the cursor
-                let selection_end =
-                    if selection_is_primary && !cursor_is_block && mode != Mode::Insert {
-                        range.head
+            // Handle cursor rendering
+            // - For primary cursor with beam/underline: terminal draws it (unless unfocused)
+            // - For secondary cursors: we need to draw a marker since terminal can only show one cursor
+            // - For block cursor: we draw all cursors manually
+            let needs_cursor_highlight = !selection_is_primary  // secondary cursors always need manual rendering
+                || cursor_is_block  // block cursors are drawn manually
+                || !is_terminal_focused;  // unfocused needs manual cursor
+
+            if needs_cursor_highlight {
+                // For selections, put the cursor highlight on the last/first char INSIDE the selection
+                // For empty selections (cursor only), highlight the char after cursor position
+                use helix_core::graphemes::prev_grapheme_boundary;
+
+                let (cursor_start, cursor_end) = if sel_start == sel_end {
+                    // Empty selection: highlight char after cursor
+                    let pos = range.head;
+                    let end = if pos >= text.len_chars() {
+                        pos + 1
                     } else {
-                        cursor_start
+                        next_grapheme_boundary(text, pos)
                     };
-                spans.push((selection_scope, range.anchor..selection_end));
-                // add block cursors
-                // skip primary cursor if terminal is unfocused - terminal cursor is used in that case
-                if !selection_is_primary || (cursor_is_block && is_terminal_focused) {
-                    spans.push((cursor_scope, cursor_start..range.head));
-                }
-            } else {
-                // Reverse case.
-                let cursor_end = next_grapheme_boundary(text, range.head);
-                // add block cursors
-                // skip primary cursor if terminal is unfocused - terminal cursor is used in that case
-                if !selection_is_primary || (cursor_is_block && is_terminal_focused) {
-                    spans.push((cursor_scope, range.head..cursor_end));
-                }
-                // non block cursors look like they exclude the cursor
-                let selection_start = if selection_is_primary
-                    && !cursor_is_block
-                    && !(mode == Mode::Insert && cursor_end == range.anchor)
-                {
-                    range.head
+                    (pos, end)
+                } else if range.head > range.anchor {
+                    // Forward selection: cursor on last char of selection (just before head)
+                    let start = prev_grapheme_boundary(text, range.head);
+                    (start, range.head)
                 } else {
-                    cursor_end
+                    // Backward selection: cursor on first char of selection (at head)
+                    (range.head, next_grapheme_boundary(text, range.head))
                 };
-                spans.push((selection_scope, selection_start..range.anchor));
+                cursor_spans.push((cursor_scope, cursor_start..cursor_end));
             }
         }
 
-        OverlayHighlights::Heterogenous { highlights: spans }
+        let mut result = Vec::new();
+        if !selection_spans.is_empty() {
+            result.push(OverlayHighlights::Heterogenous { highlights: selection_spans });
+        }
+        if !cursor_spans.is_empty() {
+            result.push(OverlayHighlights::Heterogenous { highlights: cursor_spans });
+        }
+        result
     }
 
     /// Render brace match, etc (meant for the focused view only)
