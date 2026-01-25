@@ -4026,17 +4026,10 @@ fn select_mode(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
 
-    // Make sure end-of-document selections are also 1-width.
-    // (With the exception of being in an empty document, of course.)
+    // Collapse selection to cursor when entering select mode
     let selection = doc.selection(view.id).clone().transform(|range| {
-        if range.is_empty() && range.head == text.len_chars() {
-            Range::new(
-                graphemes::prev_grapheme_boundary(text, range.anchor),
-                range.head,
-            )
-        } else {
-            range
-        }
+        let pos = range.cursor(text);
+        Range::new(pos, pos)
     });
     doc.set_selection(view.id, selection);
 
