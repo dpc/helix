@@ -12,9 +12,37 @@ async fn insert_mode_cursor_position() -> anyhow::Result<()> {
     })
     .await?;
 
-    test(("#[\n|]#", "i", "#[|\n]#")).await?;
-    test(("#[\n|]#", "i<esc>", "#[|\n]#")).await?;
-    test(("#[\n|]#", "i<esc>i", "#[|\n]#")).await?;
+    // With edge-based selections, `i` collapses to head position (cursor)
+    // Input: Range(0, 1) forward selection -> collapses to Range(1, 1) at head
+    test(TestCase {
+        in_text: "\n".into(),
+        in_selection: Selection::single(0, 1),
+        in_keys: "i".into(),
+        out_text: "\n".into(),
+        out_selection: Selection::single(1, 1),
+        line_feed_handling: LineFeedHandling::AsIs,
+    })
+    .await?;
+
+    test(TestCase {
+        in_text: "\n".into(),
+        in_selection: Selection::single(0, 1),
+        in_keys: "i<esc>".into(),
+        out_text: "\n".into(),
+        out_selection: Selection::single(1, 1),
+        line_feed_handling: LineFeedHandling::AsIs,
+    })
+    .await?;
+
+    test(TestCase {
+        in_text: "\n".into(),
+        in_selection: Selection::single(0, 1),
+        in_keys: "i<esc>i".into(),
+        out_text: "\n".into(),
+        out_selection: Selection::single(1, 1),
+        line_feed_handling: LineFeedHandling::AsIs,
+    })
+    .await?;
 
     Ok(())
 }
@@ -36,6 +64,7 @@ async fn insert_to_normal_mode_cursor_position() -> anyhow::Result<()> {
     ))
     .await?;
 
+    // With edge-based selections, `a` enters insert mode without changing selection
     test((
         indoc! {"\
                 #[f|]#oo
@@ -43,8 +72,8 @@ async fn insert_to_normal_mode_cursor_position() -> anyhow::Result<()> {
         },
         "a",
         indoc! {"\
-                #[fo|]#o
-                #(ba|)#r"
+                #[f|]#oo
+                #(b|)#ar"
         },
     ))
     .await?;
@@ -435,11 +464,30 @@ async fn cursor_position_newly_opened_file() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn cursor_position_append_eof() -> anyhow::Result<()> {
-    // Selection is forwards
-    test(("#[foo|]#", "abar<esc>", "#[foobar|]#\n")).await?;
+    // With edge-based selections, `a` preserves selection while inserting at cursor (head)
+    // Characters are inserted at cursor position, cursor moves after each char
+    // Forward selection: anchor stays, head moves after inserted chars
+    test(TestCase {
+        in_text: "foo\n".into(),
+        in_selection: Selection::single(0, 3), // forward selection of "foo", cursor at 3
+        in_keys: "abar<esc>".into(),
+        out_text: "foobar\n".into(),
+        out_selection: Selection::single(0, 6), // anchor preserved at 0, head at 6 after "bar"
+        line_feed_handling: LineFeedHandling::AsIs,
+    })
+    .await?;
 
-    // Selection is backwards
-    test(("#[|foo]#", "abar<esc>", "#[foobar|]#\n")).await?;
+    // Backward selection: typing happens at anchor (right edge) to extend selection
+    // Head stays at left edge, selection grows to include typed characters
+    test(TestCase {
+        in_text: "foo\n".into(),
+        in_selection: Selection::single(3, 0), // backward selection, head at 0
+        in_keys: "abar<esc>".into(),
+        out_text: "foobar\n".into(),
+        out_selection: Selection::single(6, 0), // selection extends: anchor at 6, head stays at 0
+        line_feed_handling: LineFeedHandling::AsIs,
+    })
+    .await?;
 
     Ok(())
 }
