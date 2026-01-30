@@ -3114,7 +3114,7 @@ fn enter_insert_mode(cx: &mut Context) {
     cx.editor.mode = Mode::Insert;
 }
 
-// inserts at the start of each selection
+// inserts at the cursor position, collapsing the selection
 fn insert_mode(cx: &mut Context) {
     enter_insert_mode(cx);
     let (view, doc) = current!(cx.editor);
@@ -3125,26 +3125,20 @@ fn insert_mode(cx: &mut Context) {
         doc.text().to_string()
     );
 
-    // Collapse selection to cursor at start
+    // Collapse selection to cursor (head) position
     let selection = doc
         .selection(view.id)
         .clone()
-        .transform(|range| Range::point(range.from()));
+        .transform(|range| Range::point(range.head));
 
     doc.set_selection(view.id, selection);
 }
 
-// inserts at the end of each selection
+// inserts at the cursor position, keeping the selection
 fn append_mode(cx: &mut Context) {
     enter_insert_mode(cx);
-    let (view, doc) = current!(cx.editor);
-    doc.restore_cursor = true;
-
-    // Collapse selection to cursor at end
-    let selection = doc.selection(view.id).clone().transform(|range| {
-        Range::point(range.to())
-    });
-    doc.set_selection(view.id, selection);
+    // With edge-based selections, just enter insert mode at the cursor (head)
+    // without modifying the selection
 }
 
 fn file_picker(cx: &mut Context) {
@@ -4242,10 +4236,45 @@ pub mod insert {
     // The default insert hook: simply insert the character
     #[allow(clippy::unnecessary_wraps)] // need to use Option<> because of the Hook signature
     fn insert(doc: &Rope, selection: &Selection, ch: char) -> Option<Transaction> {
-        let cursors = selection.clone().cursors(doc.slice(..));
-        let mut t = Tendril::new();
-        t.push(ch);
-        let transaction = Transaction::insert(doc, &cursors, t);
+        use helix_core::movement::Direction;
+
+        let mut end_ranges: SmallVec<[Range; 1]> = SmallVec::with_capacity(selection.len());
+        let mut offset = 0usize;
+
+        let transaction = Transaction::change_by_selection(doc, selection, |range| {
+            let mut t = Tendril::new();
+            t.push(ch);
+            let len_inserted = t.chars().count();
+
+            // For backward selections, insert at anchor (right edge) to extend selection
+            // while keeping head at left edge. For forward selections, insert at head.
+            let (insert_pos, new_anchor, new_head) =
+                if range.direction() == Direction::Backward && !range.is_empty() {
+                    // Insert at right edge (anchor), extend selection leftward
+                    let insert_pos = range.anchor + offset;
+                    let new_anchor = insert_pos + len_inserted;
+                    let new_head = range.head + offset; // stays at left edge
+                    (insert_pos, new_anchor, new_head)
+                } else {
+                    // Insert at cursor (head), extend selection rightward
+                    let cursor = range.cursor(doc.slice(..));
+                    let new_head = cursor + offset + len_inserted;
+                    let new_anchor = if range.anchor >= cursor {
+                        range.anchor + offset + len_inserted
+                    } else {
+                        range.anchor + offset
+                    };
+                    (cursor, new_anchor, new_head)
+                };
+
+            end_ranges.push(Range::new(new_anchor, new_head));
+            offset += len_inserted;
+
+            (insert_pos, insert_pos, Some(t))
+        });
+
+        let transaction =
+            transaction.with_selection(Selection::new(end_ranges, selection.primary_index()));
         Some(transaction)
     }
 
