@@ -1623,23 +1623,19 @@ fn find_char_line_ending_motion(
     let text = doc.text().slice(..);
 
     let selection = doc.selection(view.id).clone().transform(|range| {
-        let cursor_anchor = range.cursor(text);
-        let cursor_head = next_grapheme_boundary(text, cursor_anchor);
+        let cursor = range.cursor(text);
         let cursor_line = range.cursor_line(text);
 
         let pos = match direction {
             Direction::Forward => {
                 let line_end = line_end_char_index(&text, cursor_line);
-                let on_edge = if inclusive {
-                    line_end == cursor_anchor
-                } else {
-                    line_end == cursor_head || line_end == cursor_anchor
-                };
+                let on_edge = line_end <= cursor;
                 let line = cursor_line + count - 1 + on_edge as usize;
                 if line >= text.len_lines() - 1 {
                     return range;
                 }
-                line_end_char_index(&text, line) - !inclusive as usize
+                // Edge-based: inclusive positions after newline, exclusive at newline
+                line_end_char_index(&text, line) + inclusive as usize
             }
             Direction::Backward => {
                 if inclusive {
@@ -1649,7 +1645,7 @@ fn find_char_line_ending_motion(
                     }
                     line_end_char_index(&text, line as usize)
                 } else {
-                    let on_edge = text.line_to_char(cursor_line) == cursor_anchor;
+                    let on_edge = text.line_to_char(cursor_line) == cursor;
                     let line = cursor_line as isize - count as isize + 1 - on_edge as isize;
                     if line <= 0 {
                         return range;
@@ -1691,24 +1687,21 @@ fn find_char(cx: &mut Context, direction: Direction, inclusive: bool, extend: bo
                 let text = doc.text().slice(..);
 
                 let selection = doc.selection(view.id).clone().transform(|range| {
-                    let cursor_anchor = range.cursor(text);
-                    let cursor_head = next_grapheme_boundary(text, cursor_anchor);
+                    let cursor = range.cursor(text);
 
-                    // Exclusive search skips the next char after cursor to enable repeated application
+                    // Edge-based: skip for repeated exclusive search
                     let search_start_pos = match (inclusive, direction) {
-                        (true, Direction::Forward) => cursor_head,
-                        (true, Direction::Backward) => cursor_anchor,
-                        (false, Direction::Forward) => cursor_head + 1,
-                        (false, Direction::Backward) => cursor_anchor - 1,
+                        (true, Direction::Forward) => cursor,
+                        (true, Direction::Backward) => cursor,
+                        (false, Direction::Forward) => cursor + 1,
+                        (false, Direction::Backward) => cursor - 1,
                     };
 
                     search::find_nth_char(count, text, ch, search_start_pos, direction)
-                        // Exclusive search should stop on previous character
-                        .map(|pos| match (inclusive, direction) {
-                            (true, Direction::Forward) => pos,
-                            (true, Direction::Backward) => pos,
-                            (false, Direction::Forward) => pos - 1,
-                            (false, Direction::Backward) => pos + 1,
+                        // Edge-based position adjustment
+                        .map(|pos| match direction {
+                            Direction::Forward => pos + inclusive as usize,
+                            Direction::Backward => pos + !inclusive as usize,
                         })
                         .map_or(range, |pos| {
                             if extend {
