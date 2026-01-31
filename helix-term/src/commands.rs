@@ -1575,8 +1575,10 @@ fn find_char_line_ending(
         };
 
         let pos = match (direction, inclusive) {
-            (Direction::Forward, true) => line_end_char_index(&text, find_on_line),
-            (Direction::Forward, false) => line_end_char_index(&text, find_on_line) - 1,
+            // For edge-based selections: f<Enter> positions after the newline
+            (Direction::Forward, true) => line_end_char_index(&text, find_on_line) + 1,
+            // t<Enter> positions before the newline (at the newline char index)
+            (Direction::Forward, false) => line_end_char_index(&text, find_on_line),
             (Direction::Backward, true) => line_end_char_index(&text, find_on_line - 1),
             (Direction::Backward, false) => text.line_to_char(find_on_line),
         };
@@ -1650,14 +1652,8 @@ fn find_char_impl<F, M: CharMatcher + Clone + Copy>(
     let text = doc.text().slice(..);
 
     let selection = doc.selection(view.id).clone().transform(|range| {
-        // TODO: use `Range::cursor()` here instead.  However, that works in terms of
-        // graphemes, whereas this function doesn't yet.  So we're doing the same logic
-        // here, but just in terms of chars instead.
-        let search_start_pos = if range.anchor < range.head {
-            range.head - 1
-        } else {
-            range.head
-        };
+        // With edge-based selections, head is the cursor position
+        let search_start_pos = range.head;
 
         search_fn(text, char_matcher, search_start_pos, count, inclusive).map_or(range, |pos| {
             if extend {
@@ -1677,15 +1673,18 @@ fn find_next_char_impl(
     n: usize,
     inclusive: bool,
 ) -> Option<usize> {
-    let pos = (pos + 1).min(text.len_chars());
+    // Start searching from the next character position
+    let search_pos = (pos + 1).min(text.len_chars());
     if inclusive {
-        search::find_nth_next(text, ch, pos, n)
+        // For `f`: position cursor after the found character (edge position = char_index + 1)
+        search::find_nth_next(text, ch, search_pos, n).map(|idx| idx + 1)
     } else {
-        let n = match text.get_char(pos) {
+        // For `t`: position cursor before the found character (edge position = char_index)
+        let n = match text.get_char(search_pos) {
             Some(next_ch) if next_ch == ch => n + 1,
             _ => n,
         };
-        search::find_nth_next(text, ch, pos, n).map(|n| n.saturating_sub(1))
+        search::find_nth_next(text, ch, search_pos, n)
     }
 }
 
