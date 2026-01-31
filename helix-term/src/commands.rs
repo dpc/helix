@@ -4889,22 +4889,22 @@ pub(crate) fn paste_bracketed_value(cx: &mut Context, contents: String) {
 }
 
 fn paste_clipboard_after(cx: &mut Context) {
-    paste(cx.editor, '+', Paste::After, cx.count());
+    paste(cx.editor, '+', Paste::Cursor, cx.count());
     exit_select_mode(cx);
 }
 
 fn paste_clipboard_before(cx: &mut Context) {
-    paste(cx.editor, '+', Paste::Before, cx.count());
+    paste(cx.editor, '+', Paste::Cursor, cx.count());
     exit_select_mode(cx);
 }
 
 fn paste_primary_clipboard_after(cx: &mut Context) {
-    paste(cx.editor, '*', Paste::After, cx.count());
+    paste(cx.editor, '*', Paste::Cursor, cx.count());
     exit_select_mode(cx);
 }
 
 fn paste_primary_clipboard_before(cx: &mut Context) {
-    paste(cx.editor, '*', Paste::Before, cx.count());
+    paste(cx.editor, '*', Paste::Cursor, cx.count());
     exit_select_mode(cx);
 }
 
@@ -4986,7 +4986,7 @@ fn paste_after(cx: &mut Context) {
         cx.editor,
         cx.register
             .unwrap_or(cx.editor.config().default_yank_register),
-        Paste::After,
+        Paste::Cursor,
         cx.count(),
     );
     exit_select_mode(cx);
@@ -4997,7 +4997,7 @@ fn paste_before(cx: &mut Context) {
         cx.editor,
         cx.register
             .unwrap_or(cx.editor.config().default_yank_register),
-        Paste::Before,
+        Paste::Cursor,
         cx.count(),
     );
     exit_select_mode(cx);
