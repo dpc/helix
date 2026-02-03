@@ -866,12 +866,14 @@ fn goto_line_end_impl(view: &mut View, doc: &mut Document, movement: Movement) {
 
     let selection = doc.selection(view.id).clone().transform(|range| {
         let line = range.cursor_line(text);
-        let line_start = text.line_to_char(line);
+        // With edge-based selections, position cursor at line end (before newline)
+        let pos = line_end_char_index(&text, line);
 
-        let pos = graphemes::prev_grapheme_boundary(text, line_end_char_index(&text, line))
-            .max(line_start);
-
-        range.put_cursor(text, pos, movement == Movement::Extend)
+        if movement == Movement::Extend {
+            range.put_cursor(text, pos, true)
+        } else {
+            Range::new(range.cursor(text), pos)
+        }
     });
     doc.set_selection(view.id, selection);
 }
@@ -899,9 +901,14 @@ fn goto_line_end_newline_impl(view: &mut View, doc: &mut Document, movement: Mov
 
     let selection = doc.selection(view.id).clone().transform(|range| {
         let line = range.cursor_line(text);
-        let pos = line_end_char_index(&text, line);
+        // With edge-based selections, position cursor after the newline
+        let pos = line_end_char_index(&text, line) + 1;
 
-        range.put_cursor(text, pos, movement == Movement::Extend)
+        if movement == Movement::Extend {
+            range.put_cursor(text, pos, true)
+        } else {
+            Range::new(range.cursor(text), pos)
+        }
     });
     doc.set_selection(view.id, selection);
 }
@@ -932,7 +939,11 @@ fn goto_line_start_impl(view: &mut View, doc: &mut Document, movement: Movement)
 
         // adjust to start of the line
         let pos = text.line_to_char(line);
-        range.put_cursor(text, pos, movement == Movement::Extend)
+        if movement == Movement::Extend {
+            range.put_cursor(text, pos, true)
+        } else {
+            Range::new(range.cursor(text), pos)
+        }
     });
     doc.set_selection(view.id, selection);
 }
@@ -1062,7 +1073,11 @@ fn goto_first_nonwhitespace_impl(view: &mut View, doc: &mut Document, movement: 
 
         if let Some(pos) = text.line(line).first_non_whitespace_char() {
             let pos = pos + text.line_to_char(line);
-            range.put_cursor(text, pos, movement == Movement::Extend)
+            if movement == Movement::Extend {
+                range.put_cursor(text, pos, true)
+            } else {
+                Range::new(range.cursor(text), pos)
+            }
         } else {
             range
         }
@@ -1233,7 +1248,11 @@ where
     let selection = doc
         .selection(view.id)
         .clone()
-        .transform(|range| move_fn(text, range, count));
+        .transform(|range| {
+            let pos = range.cursor(text);
+            let new_pos = move_fn(text, range, count).cursor(text);
+            Range::new(pos, new_pos)
+        });
     doc.set_selection(view.id, selection);
 }
 

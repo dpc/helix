@@ -7,7 +7,7 @@ use crate::{
     chars::{categorize_char, char_is_line_ending, CharCategory},
     doc_formatter::TextFormat,
     graphemes::{
-        next_grapheme_boundary, nth_next_grapheme_boundary, nth_prev_grapheme_boundary,
+        nth_next_grapheme_boundary, nth_prev_grapheme_boundary,
         prev_grapheme_boundary,
     },
     line_ending::rope_is_line_ending,
@@ -229,25 +229,10 @@ fn word_move(slice: RopeSlice, range: Range, count: usize, target: WordMotionTar
         return range;
     }
 
-    // Prepare the range appropriately based on the target movement
-    // direction.  This is addressing two things at once:
-    //
-    //   1. Block-cursor semantics.
-    //   2. The anchor position being irrelevant to the output result.
-    #[allow(clippy::collapsible_else_if)] // Makes the structure clearer in this case.
-    let start_range = if is_prev {
-        if range.anchor < range.head {
-            Range::new(range.head, prev_grapheme_boundary(slice, range.head))
-        } else {
-            Range::new(next_grapheme_boundary(slice, range.head), range.head)
-        }
-    } else {
-        if range.anchor < range.head {
-            Range::new(prev_grapheme_boundary(slice, range.head), range.head)
-        } else {
-            Range::new(range.head, next_grapheme_boundary(slice, range.head))
-        }
-    };
+    // With edge-based (I-shaped) cursor, start from the exact cursor
+    // position. The anchor is set to head so range_to_target starts
+    // iterating from the cursor without any block-cursor expansion.
+    let start_range = Range::point(range.head);
 
     // Do the main work.
     let mut range = start_range;
@@ -990,7 +975,7 @@ mod test {
             ("Basic forward motion stops at the first space",
                 vec![(1, Range::new(0, 0), Range::new(0, 6))]),
             (" Starting from a boundary advances the anchor",
-                vec![(1, Range::new(0, 0), Range::new(1, 10))]),
+                vec![(1, Range::new(0, 0), Range::new(0, 1))]),
             ("Long       whitespace gap is bridged by the head",
                 vec![(1, Range::new(0, 0), Range::new(0, 11))]),
             ("Previous anchor is irrelevant for forward motions",
@@ -1033,7 +1018,7 @@ mod test {
                 vec![
                     (1, Range::new(0, 0), Range::new(0, 3)),
                     (1, Range::new(0, 3), Range::new(3, 6)),
-                    (1, Range::new(0, 2), Range::new(1, 3)),
+                    (1, Range::new(0, 2), Range::new(2, 3)),
                 ]),
             ("Multiple motions at once resolve correctly",
                 vec![
@@ -1084,42 +1069,42 @@ mod test {
                 "next_subword_start",
                 vec![
                     (1, Range::new(0, 0), Range::new(0, 5)),
-                    (1, Range::new(4, 4), Range::new(5, 13)),
+                    (1, Range::new(4, 4), Range::new(4, 5)),
                 ],
             ),
             (
                 "Next_Subword_Start",
                 vec![
                     (1, Range::new(0, 0), Range::new(0, 5)),
-                    (1, Range::new(4, 4), Range::new(5, 13)),
+                    (1, Range::new(4, 4), Range::new(4, 5)),
                 ],
             ),
             (
                 "NEXT_SUBWORD_START",
                 vec![
                     (1, Range::new(0, 0), Range::new(0, 5)),
-                    (1, Range::new(4, 4), Range::new(5, 13)),
+                    (1, Range::new(4, 4), Range::new(4, 5)),
                 ],
             ),
             (
                 "next subword start",
                 vec![
                     (1, Range::new(0, 0), Range::new(0, 5)),
-                    (1, Range::new(4, 4), Range::new(5, 13)),
+                    (1, Range::new(4, 4), Range::new(4, 5)),
                 ],
             ),
             (
                 "Next Subword Start",
                 vec![
                     (1, Range::new(0, 0), Range::new(0, 5)),
-                    (1, Range::new(4, 4), Range::new(5, 13)),
+                    (1, Range::new(4, 4), Range::new(4, 5)),
                 ],
             ),
             (
                 "NEXT SUBWORD START",
                 vec![
                     (1, Range::new(0, 0), Range::new(0, 5)),
-                    (1, Range::new(4, 4), Range::new(5, 13)),
+                    (1, Range::new(4, 4), Range::new(4, 5)),
                 ],
             ),
             (
@@ -1127,7 +1112,7 @@ mod test {
                 vec![
                     (1, Range::new(0, 0), Range::new(0, 6)),
                     (1, Range::new(4, 4), Range::new(4, 6)),
-                    (1, Range::new(5, 5), Range::new(6, 15)),
+                    (1, Range::new(5, 5), Range::new(5, 6)),
                 ],
             ),
             (
@@ -1135,7 +1120,7 @@ mod test {
                 vec![
                     (1, Range::new(0, 0), Range::new(0, 6)),
                     (1, Range::new(4, 4), Range::new(4, 6)),
-                    (1, Range::new(5, 5), Range::new(6, 15)),
+                    (1, Range::new(5, 5), Range::new(5, 6)),
                 ],
             ),
             (
@@ -1143,7 +1128,7 @@ mod test {
                 vec![
                     (1, Range::new(0, 0), Range::new(0, 6)),
                     (1, Range::new(4, 4), Range::new(4, 6)),
-                    (1, Range::new(5, 5), Range::new(6, 15)),
+                    (1, Range::new(5, 5), Range::new(5, 6)),
                 ],
             ),
         ];
@@ -1248,7 +1233,7 @@ mod test {
             ("Basic forward motion stops at the first space",
                 vec![(1, Range::new(0, 0), Range::new(0, 6))]),
             (" Starting from a boundary advances the anchor",
-                vec![(1, Range::new(0, 0), Range::new(1, 10))]),
+                vec![(1, Range::new(0, 0), Range::new(0, 1))]),
             ("Long       whitespace gap is bridged by the head",
                 vec![(1, Range::new(0, 0), Range::new(0, 11))]),
             ("Previous anchor is irrelevant for forward motions",
@@ -1289,7 +1274,7 @@ mod test {
                 vec![
                     (1, Range::new(0, 0), Range::new(0, 3)),
                     (1, Range::new(0, 3), Range::new(3, 6)),
-                    (1, Range::new(0, 1), Range::new(0, 3)),
+                    (1, Range::new(0, 1), Range::new(1, 3)),
                 ]),
             ("Multiple motions at once resolve correctly",
                 vec![
@@ -1330,7 +1315,7 @@ mod test {
     fn test_behaviour_when_moving_to_start_of_previous_words() {
         let tests = [
             ("Basic backward motion from the middle of a word",
-                vec![(1, Range::new(3, 3), Range::new(4, 0))]),
+                vec![(1, Range::new(3, 3), Range::new(3, 0))]),
 
             // // Why do we want this behavior?  The current behavior fails this
             // // test, but seems better and more consistent.
@@ -1338,11 +1323,11 @@ mod test {
             //     vec![(1, Range::new(0, 9), Range::new(8, 0))]),
 
             ("    Jump to start of a word preceded by whitespace",
-                vec![(1, Range::new(5, 5), Range::new(6, 4))]),
+                vec![(1, Range::new(5, 5), Range::new(5, 4))]),
             ("    Jump to start of line from start of word preceded by whitespace",
                 vec![(1, Range::new(4, 4), Range::new(4, 0))]),
             ("Previous anchor is irrelevant for backward motions",
-                vec![(1, Range::new(12, 5), Range::new(6, 0))]),
+                vec![(1, Range::new(12, 5), Range::new(5, 0))]),
             ("    Starting from whitespace moves to first space in sequence",
                 vec![(1, Range::new(0, 4), Range::new(4, 0))]),
             ("Identifiers_with_underscores are considered a single word",
@@ -1363,7 +1348,7 @@ mod test {
                     (1, Range::new(10, 6), Range::new(6, 0)),
                 ]),
             (".._.._ punctuation is not joined by underscores into a single block",
-                vec![(1, Range::new(0, 6), Range::new(5, 3))]),
+                vec![(1, Range::new(0, 6), Range::new(6, 5))]),
             ("Newlines\n\nare bridged seamlessly.",
                 vec![
                     (1, Range::new(0, 10), Range::new(8, 0)),
@@ -1417,74 +1402,74 @@ mod test {
             (
                 "PrevSubwordEnd",
                 vec![
-                    (1, Range::new(13, 13), Range::new(14, 11)),
+                    (1, Range::new(13, 13), Range::new(13, 11)),
                     (1, Range::new(11, 11), Range::new(11, 4)),
                 ],
             ),
             (
                 "prev subword end",
                 vec![
-                    (1, Range::new(15, 15), Range::new(16, 13)),
-                    (1, Range::new(12, 12), Range::new(13, 5)),
+                    (1, Range::new(15, 15), Range::new(15, 13)),
+                    (1, Range::new(12, 12), Range::new(12, 5)),
                 ],
             ),
             (
                 "Prev Subword End",
                 vec![
-                    (1, Range::new(15, 15), Range::new(16, 13)),
-                    (1, Range::new(12, 12), Range::new(13, 5)),
+                    (1, Range::new(15, 15), Range::new(15, 13)),
+                    (1, Range::new(12, 12), Range::new(12, 5)),
                 ],
             ),
             (
                 "PREV SUBWORD END",
                 vec![
-                    (1, Range::new(15, 15), Range::new(16, 13)),
-                    (1, Range::new(12, 12), Range::new(13, 5)),
+                    (1, Range::new(15, 15), Range::new(15, 13)),
+                    (1, Range::new(12, 12), Range::new(12, 5)),
                 ],
             ),
             (
                 "prev_subword_end",
                 vec![
-                    (1, Range::new(15, 15), Range::new(16, 13)),
-                    (1, Range::new(12, 12), Range::new(13, 5)),
+                    (1, Range::new(15, 15), Range::new(15, 13)),
+                    (1, Range::new(12, 12), Range::new(12, 5)),
                 ],
             ),
             (
                 "Prev_Subword_End",
                 vec![
-                    (1, Range::new(15, 15), Range::new(16, 13)),
-                    (1, Range::new(12, 12), Range::new(13, 5)),
+                    (1, Range::new(15, 15), Range::new(15, 13)),
+                    (1, Range::new(12, 12), Range::new(12, 5)),
                 ],
             ),
             (
                 "PREV_SUBWORD_END",
                 vec![
-                    (1, Range::new(15, 15), Range::new(16, 13)),
-                    (1, Range::new(12, 12), Range::new(13, 5)),
+                    (1, Range::new(15, 15), Range::new(15, 13)),
+                    (1, Range::new(12, 12), Range::new(12, 5)),
                 ],
             ),
             (
                 "prev__subword__end",
                 vec![
-                    (1, Range::new(17, 17), Range::new(18, 15)),
-                    (1, Range::new(13, 13), Range::new(14, 6)),
-                    (1, Range::new(14, 14), Range::new(15, 6)),
+                    (1, Range::new(17, 17), Range::new(17, 15)),
+                    (1, Range::new(13, 13), Range::new(13, 6)),
+                    (1, Range::new(14, 14), Range::new(14, 6)),
                 ],
             ),
             (
                 "Prev__Subword__End",
                 vec![
-                    (1, Range::new(17, 17), Range::new(18, 15)),
-                    (1, Range::new(13, 13), Range::new(14, 6)),
-                    (1, Range::new(14, 14), Range::new(15, 6)),
+                    (1, Range::new(17, 17), Range::new(17, 15)),
+                    (1, Range::new(13, 13), Range::new(13, 6)),
+                    (1, Range::new(14, 14), Range::new(14, 6)),
                 ],
             ),
             (
                 "PREV__SUBWORD__END",
                 vec![
-                    (1, Range::new(17, 17), Range::new(18, 15)),
-                    (1, Range::new(13, 13), Range::new(14, 6)),
-                    (1, Range::new(14, 14), Range::new(15, 6)),
+                    (1, Range::new(17, 17), Range::new(17, 15)),
+                    (1, Range::new(13, 13), Range::new(13, 6)),
+                    (1, Range::new(14, 14), Range::new(14, 6)),
                 ],
             ),
         ];
@@ -1502,7 +1487,7 @@ mod test {
         let tests = [
             (
                 "Basic backward motion from the middle of a word",
-                vec![(1, Range::new(3, 3), Range::new(4, 0))],
+                vec![(1, Range::new(3, 3), Range::new(3, 0))],
             ),
 
             // // Why do we want this behavior?  The current behavior fails this
@@ -1512,14 +1497,14 @@ mod test {
 
             (
                 "    Jump to start of a word preceded by whitespace",
-                vec![(1, Range::new(5, 5), Range::new(6, 4))],
+                vec![(1, Range::new(5, 5), Range::new(5, 4))],
             ),
             (
                 "    Jump to start of line from start of word preceded by whitespace",
                 vec![(1, Range::new(3, 4), Range::new(4, 0))],
             ),
             ("Previous anchor is irrelevant for backward motions",
-                vec![(1, Range::new(12, 5), Range::new(6, 0))]),
+                vec![(1, Range::new(12, 5), Range::new(5, 0))]),
             (
                 "    Starting from whitespace moves to first space in sequence",
                 vec![(1, Range::new(0, 4), Range::new(4, 0))],
@@ -1682,15 +1667,15 @@ mod test {
     fn test_behaviour_when_moving_to_end_of_previous_words() {
         let tests = [
             ("Basic backward motion from the middle of a word",
-                vec![(1, Range::new(9, 9), Range::new(10, 5))]),
+                vec![(1, Range::new(9, 9), Range::new(9, 5))]),
             ("Starting from after boundary retreats the anchor",
-                vec![(1, Range::new(0, 14), Range::new(13, 8))]),
+                vec![(1, Range::new(0, 14), Range::new(14, 13))]),
             ("Jump     to end of a word succeeded by whitespace",
                 vec![(1, Range::new(11, 11), Range::new(11, 4))]),
             ("    Jump to start of line from end of word preceded by whitespace",
                 vec![(1, Range::new(8, 8), Range::new(8, 0))]),
             ("Previous anchor is irrelevant for backward motions",
-                vec![(1, Range::new(26, 12), Range::new(13, 8))]),
+                vec![(1, Range::new(26, 12), Range::new(12, 8))]),
             ("    Starting from whitespace moves to first space in sequence",
                 vec![(1, Range::new(0, 4), Range::new(4, 0))]),
             ("Test identifiers_with_underscores are considered a single word",
@@ -1701,14 +1686,14 @@ mod test {
                 vec![(1, Range::new(16, 16), Range::new(16, 10))]),
             ("alphanumeric.!,and.?=punctuation are considered 'words' for the purposes of word motion",
                 vec![
-                    (1, Range::new(30, 30), Range::new(31, 21)),
+                    (1, Range::new(30, 30), Range::new(30, 21)),
                     (1, Range::new(31, 21), Range::new(21, 18)),
                     (1, Range::new(21, 18), Range::new(18, 15))
                 ]),
 
             ("...   ... punctuation and spaces behave as expected",
                 vec![
-                    (1, Range::new(0, 10), Range::new(9, 3)),
+                    (1, Range::new(0, 10), Range::new(10, 9)),
                     (1, Range::new(9, 3), Range::new(3, 0)),
                 ]),
             (".._.._ punctuation is not joined by underscores into a single block",
@@ -1766,74 +1751,74 @@ mod test {
             (
                 "PrevSubwordEnd",
                 vec![
-                    (1, Range::new(13, 13), Range::new(14, 11)),
+                    (1, Range::new(13, 13), Range::new(13, 11)),
                     (1, Range::new(11, 11), Range::new(11, 4)),
                 ],
             ),
             (
                 "prev subword end",
                 vec![
-                    (1, Range::new(15, 15), Range::new(16, 12)),
+                    (1, Range::new(15, 15), Range::new(15, 12)),
                     (1, Range::new(12, 12), Range::new(12, 4)),
                 ],
             ),
             (
                 "Prev Subword End",
                 vec![
-                    (1, Range::new(15, 15), Range::new(16, 12)),
+                    (1, Range::new(15, 15), Range::new(15, 12)),
                     (1, Range::new(12, 12), Range::new(12, 4)),
                 ],
             ),
             (
                 "PREV SUBWORD END",
                 vec![
-                    (1, Range::new(15, 15), Range::new(16, 12)),
+                    (1, Range::new(15, 15), Range::new(15, 12)),
                     (1, Range::new(12, 12), Range::new(12, 4)),
                 ],
             ),
             (
                 "prev_subword_end",
                 vec![
-                    (1, Range::new(15, 15), Range::new(16, 12)),
+                    (1, Range::new(15, 15), Range::new(15, 12)),
                     (1, Range::new(12, 12), Range::new(12, 4)),
                 ],
             ),
             (
                 "Prev_Subword_End",
                 vec![
-                    (1, Range::new(15, 15), Range::new(16, 12)),
+                    (1, Range::new(15, 15), Range::new(15, 12)),
                     (1, Range::new(12, 12), Range::new(12, 4)),
                 ],
             ),
             (
                 "PREV_SUBWORD_END",
                 vec![
-                    (1, Range::new(15, 15), Range::new(16, 12)),
+                    (1, Range::new(15, 15), Range::new(15, 12)),
                     (1, Range::new(12, 12), Range::new(12, 4)),
                 ],
             ),
             (
                 "prev__subword__end",
                 vec![
-                    (1, Range::new(17, 17), Range::new(18, 13)),
+                    (1, Range::new(17, 17), Range::new(17, 13)),
                     (1, Range::new(13, 13), Range::new(13, 4)),
-                    (1, Range::new(14, 14), Range::new(15, 13)),
+                    (1, Range::new(14, 14), Range::new(14, 13)),
                 ],
             ),
             (
                 "Prev__Subword__End",
                 vec![
-                    (1, Range::new(17, 17), Range::new(18, 13)),
+                    (1, Range::new(17, 17), Range::new(17, 13)),
                     (1, Range::new(13, 13), Range::new(13, 4)),
-                    (1, Range::new(14, 14), Range::new(15, 13)),
+                    (1, Range::new(14, 14), Range::new(14, 13)),
                 ],
             ),
             (
                 "PREV__SUBWORD__END",
                 vec![
-                    (1, Range::new(17, 17), Range::new(18, 13)),
+                    (1, Range::new(17, 17), Range::new(17, 13)),
                     (1, Range::new(13, 13), Range::new(13, 4)),
-                    (1, Range::new(14, 14), Range::new(15, 13)),
+                    (1, Range::new(14, 14), Range::new(14, 13)),
                 ],
             ),
         ];
@@ -1933,10 +1918,10 @@ mod test {
         let tests = [
             (
                 "Basic backward motion from the middle of a word",
-                vec![(1, Range::new(3, 3), Range::new(4, 0))],
+                vec![(1, Range::new(3, 3), Range::new(3, 0))],
             ),
             ("Starting from after boundary retreats the anchor",
-                vec![(1, Range::new(0, 9), Range::new(8, 0))],
+                vec![(1, Range::new(0, 9), Range::new(9, 8))],
             ),
             (
                 "Jump    to end of a word succeeded by whitespace",
@@ -1947,7 +1932,7 @@ mod test {
                 vec![(1, Range::new(3, 4), Range::new(4, 0))],
             ),
             ("Previous anchor is irrelevant for backward motions",
-                vec![(1, Range::new(12, 5), Range::new(6, 0))]),
+                vec![(1, Range::new(12, 5), Range::new(5, 0))]),
             (
                 "    Starting from whitespace moves to first space in sequence",
                 vec![(1, Range::new(0, 4), Range::new(4, 0))],
@@ -1969,8 +1954,8 @@ mod test {
             (
                 "...   ... punctuation and spaces behave as expected",
                 vec![
-                    (1, Range::new(0, 10), Range::new(9, 3)),
-                    (1, Range::new(10, 6), Range::new(7, 3)),
+                    (1, Range::new(0, 10), Range::new(10, 9)),
+                    (1, Range::new(10, 6), Range::new(6, 3)),
                 ],
             ),
             (".._.._ punctuation is joined by underscores into a single block",
@@ -2010,7 +1995,7 @@ mod test {
                 ]),
             ("ヒーリ..クス multibyte characters behave as normal characters, including when interacting with punctuation",
                 vec![
-                    (1, Range::new(0, 8), Range::new(7, 0)),
+                    (1, Range::new(0, 8), Range::new(8, 7)),
                 ]),
         ];
 
