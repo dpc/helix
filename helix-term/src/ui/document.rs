@@ -180,6 +180,7 @@ pub struct TextRenderer<'a> {
     pub indent_guide_char: String,
     pub indent_guide_style: Style,
     pub newline: String,
+    pub selected_newline: String,
     pub nbsp: String,
     pub nnbsp: String,
     pub space: String,
@@ -250,6 +251,7 @@ impl<'a> TextRenderer<'a> {
             surface,
             indent_guide_char: editor_config.indent_guides.character.into(),
             newline,
+            selected_newline: "·".to_owned(),
             nbsp,
             nnbsp,
             space,
@@ -355,7 +357,14 @@ impl<'a> TextRenderer<'a> {
             Grapheme::Other { ref g } if g == "\u{00A0}" => nbsp,
             Grapheme::Other { ref g } if g == "\u{202F}" => nnbsp,
             Grapheme::Other { ref g } => g,
-            Grapheme::Newline => &self.newline,
+            Grapheme::Newline => {
+                // Show visible marker for newlines when selected
+                if grapheme_style.overlay_style != Style::default() {
+                    &self.selected_newline
+                } else {
+                    &self.newline
+                }
+            }
         };
 
         let in_bounds = self.column_in_bounds(position.col, width);

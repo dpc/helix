@@ -53,9 +53,9 @@ const fn byte_from_hex(mut h: [u8; 2]) -> Option<u8> {
 #[derive(Default)]
 pub enum CursorKind {
     /// █
-    #[default]
     Block,
     /// |
+    #[default]
     Bar,
     /// _
     Underline,

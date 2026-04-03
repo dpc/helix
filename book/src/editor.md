@@ -89,7 +89,7 @@ enable = true
 # full: helix-term > src > commands > typed.rs > TypeableCommand > name
 # file: typed.rs > TypeableCommand > name
 # none: TypeableCommand > name
-path = "full|file|none"
+path = "full"
 ```
 
 The bar is displayed at the top of the view.
@@ -212,9 +212,9 @@ Valid values for these options are `block`, `bar`, `underline`, or `hidden`.
 
 | Key      | Description                                | Default   |
 | ---      | -----------                                | -------   |
-| `normal` | Cursor shape in [normal mode][normal mode] | `"block"` |
-| `insert` | Cursor shape in [insert mode][insert mode] | `"block"` |
-| `select` | Cursor shape in [select mode][select mode] | `"block"` |
+| `normal` | Cursor shape in [normal mode][normal mode] | `"bar"`   |
+| `insert` | Cursor shape in [insert mode][insert mode] | `"bar"`   |
+| `select` | Cursor shape in [select mode][select mode] | `"bar"`   |
 
 [normal mode]: ./keymap.md#normal-mode
 [insert mode]: ./keymap.md#insert-mode

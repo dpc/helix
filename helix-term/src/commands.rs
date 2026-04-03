@@ -750,11 +750,57 @@ fn move_impl(cx: &mut Context, move_fn: MoveFn, dir: Direction, behaviour: Movem
 use helix_core::movement::{move_horizontally, move_vertically};
 
 fn move_char_left(cx: &mut Context) {
-    move_impl(cx, move_horizontally, Direction::Backward, Movement::Move)
+    // Move left and select the character we moved over
+    let count = cx.count();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let text_fmt = doc.text_format(view.inner_area(doc).width, None);
+    let mut annotations = view.text_annotations(doc, None);
+
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let pos = range.cursor(text);
+        let new_pos = move_horizontally(
+            text,
+            range,
+            Direction::Backward,
+            count,
+            Movement::Move,
+            &text_fmt,
+            &mut annotations,
+        )
+        .cursor(text);
+        // Select the character we moved over, with cursor (head) at new position
+        Range::new(pos, new_pos)
+    });
+    drop(annotations);
+    doc.set_selection(view.id, selection);
 }
 
 fn move_char_right(cx: &mut Context) {
-    move_impl(cx, move_horizontally, Direction::Forward, Movement::Move)
+    // Move right and select the character we moved over
+    let count = cx.count();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let text_fmt = doc.text_format(view.inner_area(doc).width, None);
+    let mut annotations = view.text_annotations(doc, None);
+
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let pos = range.cursor(text);
+        let new_pos = move_horizontally(
+            text,
+            range,
+            Direction::Forward,
+            count,
+            Movement::Move,
+            &text_fmt,
+            &mut annotations,
+        )
+        .cursor(text);
+        // Select the character we moved over (from old pos to new_pos)
+        Range::new(pos, new_pos)
+    });
+    drop(annotations);
+    doc.set_selection(view.id, selection);
 }
 
 fn move_line_up(cx: &mut Context) {
@@ -822,12 +868,14 @@ fn goto_line_end_impl(view: &mut View, doc: &mut Document, movement: Movement) {
 
     let selection = doc.selection(view.id).clone().transform(|range| {
         let line = range.cursor_line(text);
-        let line_start = text.line_to_char(line);
+        // With edge-based selections, position cursor at line end (before newline)
+        let pos = line_end_char_index(&text, line);
 
-        let pos = graphemes::prev_grapheme_boundary(text, line_end_char_index(&text, line))
-            .max(line_start);
-
-        range.put_cursor(text, pos, movement == Movement::Extend)
+        if movement == Movement::Extend {
+            range.put_cursor(text, pos, true)
+        } else {
+            Range::new(range.cursor(text), pos)
+        }
     });
     doc.set_selection(view.id, selection);
 }
@@ -855,9 +903,14 @@ fn goto_line_end_newline_impl(view: &mut View, doc: &mut Document, movement: Mov
 
     let selection = doc.selection(view.id).clone().transform(|range| {
         let line = range.cursor_line(text);
-        let pos = line_end_char_index(&text, line);
+        // With edge-based selections, position cursor after the newline
+        let pos = line_end_char_index(&text, line) + 1;
 
-        range.put_cursor(text, pos, movement == Movement::Extend)
+        if movement == Movement::Extend {
+            range.put_cursor(text, pos, true)
+        } else {
+            Range::new(range.cursor(text), pos)
+        }
     });
     doc.set_selection(view.id, selection);
 }
@@ -888,7 +941,11 @@ fn goto_line_start_impl(view: &mut View, doc: &mut Document, movement: Movement)
 
         // adjust to start of the line
         let pos = text.line_to_char(line);
-        range.put_cursor(text, pos, movement == Movement::Extend)
+        if movement == Movement::Extend {
+            range.put_cursor(text, pos, true)
+        } else {
+            Range::new(range.cursor(text), pos)
+        }
     });
     doc.set_selection(view.id, selection);
 }
@@ -1018,7 +1075,11 @@ fn goto_first_nonwhitespace_impl(view: &mut View, doc: &mut Document, movement: 
 
         if let Some(pos) = text.line(line).first_non_whitespace_char() {
             let pos = pos + text.line_to_char(line);
-            range.put_cursor(text, pos, movement == Movement::Extend)
+            if movement == Movement::Extend {
+                range.put_cursor(text, pos, true)
+            } else {
+                Range::new(range.cursor(text), pos)
+            }
         } else {
             range
         }
@@ -1200,10 +1261,11 @@ where
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
 
-    let selection = doc
-        .selection(view.id)
-        .clone()
-        .transform(|range| move_fn(text, range, count));
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let pos = range.cursor(text);
+        let new_pos = move_fn(text, range, count).cursor(text);
+        Range::new(pos, new_pos)
+    });
     doc.set_selection(view.id, selection);
 }
 
@@ -1733,23 +1795,25 @@ fn find_char(cx: &mut Context, direction: Direction, inclusive: bool, extend: bo
                 let text = doc.text().slice(..);
 
                 let selection = doc.selection(view.id).clone().transform(|range| {
-                    let cursor_anchor = range.cursor(text);
-                    let cursor_head = next_grapheme_boundary(text, cursor_anchor);
+                    // With edge-based selections, head is the cursor position
+                    let cursor = range.head;
 
-                    // Exclusive search skips the next char after cursor to enable repeated application
+                    // For forward search, start from cursor position (edge);
+                    // for exclusive, skip one more to enable repeated application
                     let search_start_pos = match (inclusive, direction) {
-                        (true, Direction::Forward) => cursor_head,
-                        (true, Direction::Backward) => cursor_anchor,
-                        (false, Direction::Forward) => cursor_head + 1,
-                        (false, Direction::Backward) => cursor_anchor.saturating_sub(1),
+                        (true, Direction::Forward) => cursor,
+                        (true, Direction::Backward) => cursor,
+                        (false, Direction::Forward) => cursor + 1,
+                        (false, Direction::Backward) => cursor.saturating_sub(1),
                     };
 
                     search::find_nth_char(count, text, ch, search_start_pos, direction)
-                        // Exclusive search should stop on previous character
+                        // For edge-based: f positions after char (edge = idx + 1),
+                        // t positions before char (edge = idx)
                         .map(|pos| match (inclusive, direction) {
-                            (true, Direction::Forward) => pos,
+                            (true, Direction::Forward) => pos + 1,
                             (true, Direction::Backward) => pos,
-                            (false, Direction::Forward) => pos - 1,
+                            (false, Direction::Forward) => pos,
                             (false, Direction::Backward) => pos + 1,
                         })
                         .map_or(range, |pos| {
@@ -2982,14 +3046,27 @@ enum YankAction {
 
 fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
     let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
 
     let selection = doc.selection(view.id);
     let only_whole_lines = selection_is_linewise(selection, doc.text());
 
     if cx.register != Some('_') && matches!(yank, YankAction::Yank) {
-        // yank the selection
-        let text = doc.text().slice(..);
-        let values: Vec<String> = selection.fragments(text).map(Cow::into_owned).collect();
+        // yank the selection (or the character after cursor for empty selections)
+        let values: Vec<String> = selection
+            .iter()
+            .map(|range| {
+                let (from, to) = if range.from() == range.to() {
+                    // Empty selection: yank character after cursor
+                    let start = range.from();
+                    let end = next_grapheme_boundary(text, start);
+                    (start, end)
+                } else {
+                    (range.from(), range.to())
+                };
+                text.slice(from..to).to_string()
+            })
+            .collect();
         let reg_name = cx
             .register
             .unwrap_or_else(|| cx.editor.config.load().default_yank_register);
@@ -2999,9 +3076,17 @@ fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
         }
     }
 
-    // delete the selection
-    let transaction =
-        Transaction::delete_by_selection(doc.text(), selection, |range| (range.from(), range.to()));
+    // delete the selection (or character after cursor for empty selections)
+    let transaction = Transaction::delete_by_selection(doc.text(), selection, |range| {
+        if range.from() == range.to() {
+            // Empty selection: delete character after cursor
+            let start = range.from();
+            let end = next_grapheme_boundary(text, start);
+            (start, end)
+        } else {
+            (range.from(), range.to())
+        }
+    });
     doc.apply(&transaction, view.id);
 
     match op {
@@ -3116,7 +3201,7 @@ fn enter_insert_mode(cx: &mut Context) {
     cx.editor.mode = Mode::Insert;
 }
 
-// inserts at the start of each selection
+// inserts at the cursor position, collapsing the selection
 fn insert_mode(cx: &mut Context) {
     enter_insert_mode(cx);
     let (view, doc) = current!(cx.editor);
@@ -3127,44 +3212,20 @@ fn insert_mode(cx: &mut Context) {
         doc.text().to_string()
     );
 
+    // Collapse selection to cursor (head) position
     let selection = doc
         .selection(view.id)
         .clone()
-        .transform(|range| Range::new(range.to(), range.from()));
+        .transform(|range| Range::point(range.head));
 
     doc.set_selection(view.id, selection);
 }
 
-// inserts at the end of each selection
+// inserts at the cursor position, keeping the selection
 fn append_mode(cx: &mut Context) {
     enter_insert_mode(cx);
-    let (view, doc) = current!(cx.editor);
-    doc.restore_cursor = true;
-    let text = doc.text().slice(..);
-
-    // Make sure there's room at the end of the document if the last
-    // selection butts up against it.
-    let end = text.len_chars();
-    let last_range = doc
-        .selection(view.id)
-        .iter()
-        .last()
-        .expect("selection should always have at least one range");
-    if !last_range.is_empty() && last_range.to() == end {
-        let transaction = Transaction::change(
-            doc.text(),
-            [(end, end, Some(doc.line_ending.as_str().into()))].into_iter(),
-        );
-        doc.apply(&transaction, view.id);
-    }
-
-    let selection = doc.selection(view.id).clone().transform(|range| {
-        Range::new(
-            range.from(),
-            graphemes::next_grapheme_boundary(doc.text().slice(..), range.to()),
-        )
-    });
-    doc.set_selection(view.id, selection);
+    // With edge-based selections, just enter insert mode at the cursor (head)
+    // without modifying the selection
 }
 
 fn file_picker(cx: &mut Context) {
@@ -4120,17 +4181,10 @@ fn select_mode(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
 
-    // Make sure end-of-document selections are also 1-width.
-    // (With the exception of being in an empty document, of course.)
+    // Collapse selection to cursor when entering select mode
     let selection = doc.selection(view.id).clone().transform(|range| {
-        if range.is_empty() && range.head == text.len_chars() {
-            Range::new(
-                graphemes::prev_grapheme_boundary(text, range.anchor),
-                range.head,
-            )
-        } else {
-            range
-        }
+        let pos = range.cursor(text);
+        Range::new(pos, pos)
     });
     doc.set_selection(view.id, selection);
 
@@ -5033,22 +5087,22 @@ pub(crate) fn paste_bracketed_value(cx: &mut Context, contents: String) {
 }
 
 fn paste_clipboard_after(cx: &mut Context) {
-    paste(cx.editor, '+', Paste::After, cx.count());
+    paste(cx.editor, '+', Paste::Cursor, cx.count());
     exit_select_mode(cx);
 }
 
 fn paste_clipboard_before(cx: &mut Context) {
-    paste(cx.editor, '+', Paste::Before, cx.count());
+    paste(cx.editor, '+', Paste::Cursor, cx.count());
     exit_select_mode(cx);
 }
 
 fn paste_primary_clipboard_after(cx: &mut Context) {
-    paste(cx.editor, '*', Paste::After, cx.count());
+    paste(cx.editor, '*', Paste::Cursor, cx.count());
     exit_select_mode(cx);
 }
 
 fn paste_primary_clipboard_before(cx: &mut Context) {
-    paste(cx.editor, '*', Paste::Before, cx.count());
+    paste(cx.editor, '*', Paste::Cursor, cx.count());
     exit_select_mode(cx);
 }
 
@@ -5130,7 +5184,7 @@ fn paste_after(cx: &mut Context) {
         cx.editor,
         cx.register
             .unwrap_or(cx.editor.config().default_yank_register),
-        Paste::After,
+        Paste::Cursor,
         cx.count(),
     );
     exit_select_mode(cx);
@@ -5141,7 +5195,7 @@ fn paste_before(cx: &mut Context) {
         cx.editor,
         cx.register
             .unwrap_or(cx.editor.config().default_yank_register),
-        Paste::Before,
+        Paste::Cursor,
         cx.count(),
     );
     exit_select_mode(cx);

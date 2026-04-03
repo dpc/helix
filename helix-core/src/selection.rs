@@ -2,6 +2,10 @@
 //! defined as a selection range.
 //!
 //! All positioning is done via `char` offsets into the buffer.
+//!
+//! This implementation uses edge-based (beam cursor) semantics where positions
+//! represent gaps between characters rather than the characters themselves.
+//! This allows for zero-width selections (cursor position only) like in GUI editors.
 use crate::{
     graphemes::{
         ensure_grapheme_boundary_next, ensure_grapheme_boundary_prev, next_grapheme_boundary,
@@ -31,13 +35,14 @@ use std::{borrow::Cow, iter, slice};
 ///
 /// Below are some examples of `Range` configurations.
 /// The anchor and head indices are shown as "(anchor, head)"
-/// tuples, followed by example text with "[" and "]" symbols
-/// representing the anchor and head positions:
+/// tuples, followed by example text with "|" representing
+/// the cursor (head) position and "[" "]" for selection bounds:
 ///
-/// - (0, 3): `[Som]e text`.
-/// - (3, 0): `]Som[e text`.
-/// - (2, 7): `So[me te]xt`.
-/// - (1, 1): `S[]ome text`.
+/// - (0, 3): `[Som|]e text` - selection from 0 to 3, cursor at 3.
+/// - (3, 0): `|[Som]e text` - selection from 0 to 3, cursor at 0.
+/// - (2, 7): `So[me te|]xt` - selection from 2 to 7, cursor at 7.
+/// - (1, 1): `S|ome text` - cursor at position 1, no selection.
+/// - (0, 0): `|Some text` - cursor at start, no selection.
 ///
 /// Ranges are considered to be inclusive on the left and
 /// exclusive on the right, regardless of anchor-head ordering.
@@ -46,11 +51,9 @@ use std::{borrow::Cow, iter, slice};
 /// However, a zero-width range will overlap with the shared
 /// left-edge of another range.
 ///
-/// By convention, user-facing ranges are considered to have
-/// a block cursor on the head-side of the range that spans a
-/// single grapheme inward from the range's edge.  There are a
-/// variety of helper methods on `Range` for working in terms of
-/// that block cursor, all of which have `cursor` in their name.
+/// This implementation uses beam cursor (edge-based) semantics where
+/// the cursor position represents the gap between characters, allowing
+/// for zero-width selections like in GUI text editors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Range {
     /// The anchor of the range: the side that doesn't move when extending.
@@ -327,50 +330,36 @@ impl Range {
     }
 
     //--------------------------------
-    // Block-cursor methods.
+    // Cursor methods (beam/edge-based).
 
-    /// Gets the left-side position of the block cursor.
+    /// Gets the cursor position (the head of the range).
+    ///
+    /// With beam cursor semantics, the cursor is simply at the head position,
+    /// representing the edge between characters.
     #[must_use]
     #[inline]
-    pub fn cursor(self, text: RopeSlice) -> usize {
-        if self.head > self.anchor {
-            prev_grapheme_boundary(text, self.head)
-        } else {
-            self.head
-        }
+    pub fn cursor(self, _text: RopeSlice) -> usize {
+        self.head
     }
 
-    /// Puts the left side of the block cursor at `char_idx`, optionally extending.
+    /// Puts the cursor at `char_idx`, optionally extending the selection.
     ///
-    /// This follows "1-width" semantics, and therefore does a combination of anchor
-    /// and head moves to behave as if both the front and back of the range are 1-width
-    /// blocks
+    /// With beam cursor semantics, this simply moves the head to the new position.
+    /// If extending, the anchor stays in place; otherwise both anchor and head
+    /// move to the new position (creating a zero-width selection/cursor).
     ///
-    /// This method assumes that the range and `char_idx` are already properly
-    /// grapheme-aligned.
+    /// This method assumes that `char_idx` is already properly grapheme-aligned.
     #[must_use]
     #[inline]
-    pub fn put_cursor(self, text: RopeSlice, char_idx: usize, extend: bool) -> Range {
+    pub fn put_cursor(self, _text: RopeSlice, char_idx: usize, extend: bool) -> Range {
         if extend {
-            let anchor = if self.head >= self.anchor && char_idx < self.anchor {
-                next_grapheme_boundary(text, self.anchor)
-            } else if self.head < self.anchor && char_idx >= self.anchor {
-                prev_grapheme_boundary(text, self.anchor)
-            } else {
-                self.anchor
-            };
-
-            if anchor <= char_idx {
-                Range::new(anchor, next_grapheme_boundary(text, char_idx))
-            } else {
-                Range::new(anchor, char_idx)
-            }
+            Range::new(self.anchor, char_idx)
         } else {
             Range::point(char_idx)
         }
     }
 
-    /// The line number that the block-cursor is on.
+    /// The line number that the cursor is on.
     #[inline]
     #[must_use]
     pub fn cursor_line(&self, text: RopeSlice) -> usize {
@@ -655,17 +644,15 @@ impl Selection {
 
     // Ensures the selection adheres to the following invariants:
     // 1. All ranges are grapheme aligned.
-    // 2. All ranges are at least 1 character wide, unless at the
-    //    very end of the document.
-    // 3. Ranges are non-overlapping.
-    // 4. Ranges are sorted by their position in the text.
+    // 2. Ranges are non-overlapping.
+    // 3. Ranges are sorted by their position in the text.
+    //
+    // Note: With beam cursor semantics, zero-width ranges (cursor only) are valid.
     pub fn ensure_invariants(self, text: RopeSlice) -> Self {
-        self.transform(|r| r.min_width_1(text).grapheme_aligned(text))
-            .normalize()
+        self.transform(|r| r.grapheme_aligned(text)).normalize()
     }
 
-    /// Transforms the selection into all of the left-side head positions,
-    /// using block-cursor semantics.
+    /// Transforms the selection into cursor positions (head positions).
     pub fn cursors(self, text: RopeSlice) -> Self {
         self.transform(|range| Range::point(range.cursor(text)))
     }
@@ -1293,17 +1280,18 @@ mod test {
         let r = Rope::from_str("\r\nHi\r\nthere!");
         let s = r.slice(..);
 
+        // With beam cursor semantics, cursor() simply returns head.
         // Zero-width ranges.
         assert_eq!(Range::new(0, 0).cursor(s), 0);
         assert_eq!(Range::new(2, 2).cursor(s), 2);
         assert_eq!(Range::new(3, 3).cursor(s), 3);
 
-        // Forward ranges.
-        assert_eq!(Range::new(0, 2).cursor(s), 0);
-        assert_eq!(Range::new(0, 3).cursor(s), 2);
-        assert_eq!(Range::new(3, 6).cursor(s), 4);
+        // Forward ranges - cursor is at head.
+        assert_eq!(Range::new(0, 2).cursor(s), 2);
+        assert_eq!(Range::new(0, 3).cursor(s), 3);
+        assert_eq!(Range::new(3, 6).cursor(s), 6);
 
-        // Reverse ranges.
+        // Reverse ranges - cursor is at head.
         assert_eq!(Range::new(2, 0).cursor(s), 0);
         assert_eq!(Range::new(6, 2).cursor(s), 2);
         assert_eq!(Range::new(6, 3).cursor(s), 3);
@@ -1314,28 +1302,35 @@ mod test {
         let r = Rope::from_str("\r\nHi\r\nthere!");
         let s = r.slice(..);
 
-        // Zero-width ranges.
-        assert_eq!(Range::new(0, 0).put_cursor(s, 0, true), Range::new(0, 2));
-        assert_eq!(Range::new(0, 0).put_cursor(s, 2, true), Range::new(0, 3));
-        assert_eq!(Range::new(2, 3).put_cursor(s, 4, true), Range::new(2, 6));
-        assert_eq!(Range::new(2, 8).put_cursor(s, 4, true), Range::new(2, 6));
-        assert_eq!(Range::new(8, 8).put_cursor(s, 4, true), Range::new(9, 4));
+        // With beam cursor semantics, put_cursor simply moves head to the new position.
+        // When extending, anchor stays in place; otherwise we get a zero-width range.
 
-        // Forward ranges.
-        assert_eq!(Range::new(3, 6).put_cursor(s, 0, true), Range::new(4, 0));
-        assert_eq!(Range::new(3, 6).put_cursor(s, 2, true), Range::new(4, 2));
-        assert_eq!(Range::new(3, 6).put_cursor(s, 3, true), Range::new(3, 4));
-        assert_eq!(Range::new(3, 6).put_cursor(s, 4, true), Range::new(3, 6));
-        assert_eq!(Range::new(3, 6).put_cursor(s, 6, true), Range::new(3, 7));
-        assert_eq!(Range::new(3, 6).put_cursor(s, 8, true), Range::new(3, 9));
+        // Zero-width ranges - extending from anchor.
+        assert_eq!(Range::new(0, 0).put_cursor(s, 0, true), Range::new(0, 0));
+        assert_eq!(Range::new(0, 0).put_cursor(s, 2, true), Range::new(0, 2));
+        assert_eq!(Range::new(2, 3).put_cursor(s, 4, true), Range::new(2, 4));
+        assert_eq!(Range::new(2, 8).put_cursor(s, 4, true), Range::new(2, 4));
+        assert_eq!(Range::new(8, 8).put_cursor(s, 4, true), Range::new(8, 4));
 
-        // Reverse ranges.
+        // Forward ranges - anchor stays, head moves.
+        assert_eq!(Range::new(3, 6).put_cursor(s, 0, true), Range::new(3, 0));
+        assert_eq!(Range::new(3, 6).put_cursor(s, 2, true), Range::new(3, 2));
+        assert_eq!(Range::new(3, 6).put_cursor(s, 3, true), Range::new(3, 3));
+        assert_eq!(Range::new(3, 6).put_cursor(s, 4, true), Range::new(3, 4));
+        assert_eq!(Range::new(3, 6).put_cursor(s, 6, true), Range::new(3, 6));
+        assert_eq!(Range::new(3, 6).put_cursor(s, 8, true), Range::new(3, 8));
+
+        // Reverse ranges - anchor stays, head moves.
         assert_eq!(Range::new(6, 3).put_cursor(s, 0, true), Range::new(6, 0));
         assert_eq!(Range::new(6, 3).put_cursor(s, 2, true), Range::new(6, 2));
         assert_eq!(Range::new(6, 3).put_cursor(s, 3, true), Range::new(6, 3));
         assert_eq!(Range::new(6, 3).put_cursor(s, 4, true), Range::new(6, 4));
-        assert_eq!(Range::new(6, 3).put_cursor(s, 6, true), Range::new(4, 7));
-        assert_eq!(Range::new(6, 3).put_cursor(s, 8, true), Range::new(4, 9));
+        assert_eq!(Range::new(6, 3).put_cursor(s, 6, true), Range::new(6, 6));
+        assert_eq!(Range::new(6, 3).put_cursor(s, 8, true), Range::new(6, 8));
+
+        // Non-extending - creates zero-width range at new position.
+        assert_eq!(Range::new(3, 6).put_cursor(s, 0, false), Range::new(0, 0));
+        assert_eq!(Range::new(6, 3).put_cursor(s, 4, false), Range::new(4, 4));
     }
 
     #[test]
@@ -1454,5 +1449,54 @@ mod test {
             vec!((1, 4), (7, 10)),
             vec!((1, 2), (3, 4), (7, 9))
         ));
+    }
+
+    #[test]
+    fn test_backward_secondary_selection_preserved() {
+        // Test that backward selections (head < anchor) are preserved
+        // through ensure_invariants and other operations
+        let text = Rope::from_str("Hello world!");
+        let s = text.slice(..);
+
+        // Create a selection with a forward primary and backward secondary
+        // Primary: positions 0-5 (forward), Secondary: positions 6-11 (backward: anchor=11, head=6)
+        let selection = Selection::new(smallvec![Range::new(0, 5), Range::new(11, 6)], 0);
+
+        // Verify the secondary selection is backward
+        let secondary = &selection.ranges()[1];
+        assert_eq!(secondary.anchor, 11);
+        assert_eq!(secondary.head, 6);
+        assert!(
+            secondary.head < secondary.anchor,
+            "Secondary should be backward"
+        );
+
+        // Verify from() and to() return correct values regardless of direction
+        assert_eq!(secondary.from(), 6);
+        assert_eq!(secondary.to(), 11);
+
+        // Ensure invariants should NOT change the direction
+        let normalized = selection.clone().ensure_invariants(s);
+
+        // Check that ranges still exist and have correct from/to
+        // Note: after ensure_invariants the order might change due to sorting by from()
+        let ranges = normalized.ranges();
+        assert_eq!(ranges.len(), 2, "Should still have 2 ranges");
+
+        // Find the range that covers 6-11
+        let backward_range = ranges.iter().find(|r| r.from() == 6 && r.to() == 11);
+        assert!(
+            backward_range.is_some(),
+            "Should still have range covering 6-11"
+        );
+        let backward_range = backward_range.unwrap();
+
+        // The direction should be preserved
+        assert_eq!(backward_range.anchor, 11, "Anchor should be 11");
+        assert_eq!(backward_range.head, 6, "Head should be 6");
+        assert!(
+            backward_range.head < backward_range.anchor,
+            "Backward direction should be preserved after ensure_invariants"
+        );
     }
 }

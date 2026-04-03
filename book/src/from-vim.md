@@ -128,7 +128,7 @@ setting a bookmark (bookmarking a location):
 
 Helix allows [some limited movement in `insert` mode](https://docs.helix-editor.com/keymap.html#insert-mode) without switching to `normal` mode.
 
-Unlike Vim, under Helix, the cursor shape is the same (block) in insert mode and normal mode by default.
+Helix uses a bar cursor in both insert mode and normal mode by default.
 This can be adjusted in configuration:
 
 ```toml
