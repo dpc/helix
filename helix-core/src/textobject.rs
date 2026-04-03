@@ -75,7 +75,22 @@ pub fn textobject_word(
     _count: usize,
     long: bool,
 ) -> Range {
-    let pos = range.cursor(slice);
+    let cursor_pos = range.cursor(slice);
+    let char_at = slice.get_char(cursor_pos);
+
+    // With beam cursor semantics, the cursor position points to the character
+    // that the cursor is "on" (the character after the beam).
+    // For word selection, we select the word at the cursor position.
+    // If the cursor is on whitespace, return a zero-width range.
+    let cat_at = char_at.map(categorize_char);
+
+    // If cursor is at whitespace or end of document, return zero-width range
+    if cat_at.map_or(true, |c| matches!(c, CharCategory::Whitespace | CharCategory::Eol)) {
+        return Range::new(cursor_pos, cursor_pos);
+    }
+
+    // The cursor is on a word character, find the word
+    let pos = cursor_pos;
 
     let word_start = find_word_boundary(slice, pos, Direction::Backward, long);
     let word_end = match slice.get_char(pos).map(categorize_char) {
@@ -398,8 +413,8 @@ mod test {
             let slice = doc.slice(..);
             for &case in scenario {
                 let (pos, objtype, expected_range) = case;
-                // cursor is a single width selection
-                let range = Range::new(pos, pos + 1);
+                // With beam cursor semantics, cursor at position N is a zero-width range
+                let range = Range::point(pos);
                 let result = textobject_word(slice, range, objtype, 1, false);
                 assert_eq!(
                     result,

@@ -262,6 +262,12 @@ fn get_next_range(doc: &Rope, start_range: &Range, len_inserted: usize) -> Range
 
     // just skip over graphemes
     if len_inserted == 0 {
+        // For zero-width selections (cursor only), stay zero-width at next position
+        if start_range.is_empty() {
+            let new_pos = graphemes::next_grapheme_boundary(doc_slice, start_range.head);
+            return Range::point(new_pos);
+        }
+
         let end_anchor = if single_grapheme {
             graphemes::next_grapheme_boundary(doc_slice, start_range.anchor)
 
@@ -282,6 +288,11 @@ fn get_next_range(doc: &Rope, start_range: &Range, len_inserted: usize) -> Range
 
     // trivial case: only inserted a single-char opener, just move the selection
     if len_inserted == 1 {
+        // For zero-width selections (cursor only), stay zero-width after the inserted char
+        if start_range.is_empty() {
+            return Range::point(start_range.head + 1);
+        }
+
         let end_anchor = if single_grapheme || start_range.direction() == Direction::Backward {
             start_range.anchor + 1
         } else {
