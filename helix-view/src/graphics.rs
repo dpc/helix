@@ -53,15 +53,16 @@ const fn byte_from_hex(mut h: [u8; 2]) -> Option<u8> {
 #[derive(Default)]
 pub enum CursorKind {
     /// █
-    #[default]
     Block,
     /// |
+    #[default]
     Bar,
     /// _
     Underline,
     /// Hidden cursor, can set cursor position with this to let IME have correct cursor position.
     Hidden,
 }
+
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Margin {
