@@ -565,6 +565,19 @@ async fn test_join_selections() -> anyhow::Result<()> {
     ))
     .await?;
 
+    // join without inserting spaces
+    test((
+        indoc! {"\
+            #[a|]#bc
+            def
+        "},
+        "+",
+        indoc! {"\
+            #[a|]#bcdef
+        "},
+    ))
+    .await?;
+
     // join with empty line
     test((
         indoc! {"\

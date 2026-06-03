@@ -510,6 +510,7 @@ impl MappableCommand {
         format_selections, "Format selection",
         join_selections, "Join lines inside selection",
         join_selections_space, "Join lines inside selection and select spaces",
+        join_selections_no_space, "Join lines inside selection without inserting spaces",
         keep_selections, "Keep selections matching regex",
         remove_selections, "Remove selections matching regex",
         align_selections, "Align selections in column",
@@ -5315,7 +5316,7 @@ fn format_selections(cx: &mut Context) {
     });
 }
 
-fn join_selections_impl(cx: &mut Context, select_space: bool) {
+fn join_selections_impl(cx: &mut Context, insert_space: bool, select_space: bool) {
     use movement::skip_while;
     let (view, doc) = current!(cx.editor);
     let text = doc.text();
@@ -5366,11 +5367,10 @@ fn join_selections_impl(cx: &mut Context, select_space: bool) {
                 }
             }
 
-            let separator = if end == line_end_char_index(&slice, line + 1) {
-                // the joining line contains only space-characters => don't include a whitespace when joining
-                None
-            } else {
+            let separator = if insert_space && end != line_end_char_index(&slice, line + 1) {
                 Some(Tendril::from(" "))
+            } else {
+                None
             };
             changes.push((start, end, separator));
         }
@@ -5441,11 +5441,15 @@ fn keep_or_remove_selections_impl(cx: &mut Context, remove: bool) {
 }
 
 fn join_selections(cx: &mut Context) {
-    join_selections_impl(cx, false)
+    join_selections_impl(cx, true, false)
 }
 
 fn join_selections_space(cx: &mut Context) {
-    join_selections_impl(cx, true)
+    join_selections_impl(cx, true, true)
+}
+
+fn join_selections_no_space(cx: &mut Context) {
+    join_selections_impl(cx, false, false)
 }
 
 fn keep_selections(cx: &mut Context) {

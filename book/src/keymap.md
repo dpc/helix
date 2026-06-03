@@ -140,6 +140,7 @@ Normal mode is the default mode when you launch helix. You can return to it from
 | `Alt-x`                  | Shrink selection to line bounds (line-wise selection)             | `shrink_to_line_bounds`              |
 | `J`                      | Join lines inside selection                                       | `join_selections`                    |
 | `Alt-J`                  | Join lines inside selection and select the inserted space         | `join_selections_space`              |
+| `+`                      | Join lines inside selection without inserting spaces              | `join_selections_no_space`           |
 | `K`                      | Keep selections matching the regex                                | `keep_selections`                    |
 | `Alt-K`                  | Remove selections matching the regex                              | `remove_selections`                  |
 | `Ctrl-c`                 | Comment/uncomment the selections                                  | `toggle_comments`                    |

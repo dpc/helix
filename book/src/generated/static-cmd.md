@@ -207,6 +207,7 @@
 | `format_selections` | Format selection | normal: `` = ``, select: `` = `` |
 | `join_selections` | Join lines inside selection | normal: `` J ``, select: `` J `` |
 | `join_selections_space` | Join lines inside selection and select spaces | normal: `` <A-J> ``, select: `` <A-J> `` |
+| `join_selections_no_space` | Join lines inside selection without inserting spaces | normal: `` + ``, select: `` + `` |
 | `keep_selections` | Keep selections matching regex | normal: `` K ``, select: `` K `` |
 | `remove_selections` | Remove selections matching regex | normal: `` <A-K> ``, select: `` <A-K> `` |
 | `align_selections` | Align selections in column | normal: `` & ``, select: `` & `` |
