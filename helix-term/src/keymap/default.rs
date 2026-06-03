@@ -165,6 +165,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "=" => format_selections,
         "J" => join_selections,
         "A-J" => join_selections_space,
+        "+" => join_selections_no_space,
         "K" => keep_selections,
         "A-K" => remove_selections,
 
