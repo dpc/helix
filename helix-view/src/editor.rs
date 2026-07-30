@@ -1363,6 +1363,8 @@ pub struct Editor {
     pub handlers: Handlers,
 
     pub mouse_down_range: Option<Range>,
+    /// Whether the active left-button gesture delivered a drag event.
+    pub mouse_dragged: bool,
     pub cursor_cache: CursorCache,
     pub workspace_trust: WorkspaceTrust,
 }
@@ -1487,6 +1489,7 @@ impl Editor {
             needs_redraw: false,
             handlers,
             mouse_down_range: None,
+            mouse_dragged: false,
             cursor_cache: CursorCache::default(),
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             workspace_trust,

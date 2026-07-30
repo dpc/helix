@@ -456,7 +456,13 @@ impl View {
         if pos.row >= viewport.height as usize {
             return None;
         }
-        pos.col = pos.col.saturating_sub(view_offset.horizontal_offset);
+        if pos.col < view_offset.horizontal_offset {
+            return None;
+        }
+        pos.col -= view_offset.horizontal_offset;
+        if viewport.width as usize <= pos.col {
+            return None;
+        }
 
         Some(pos)
     }
@@ -731,7 +737,7 @@ mod tests {
     // 1 diagnostics + 1 spacer + 1 gutter
     const DEFAULT_GUTTER_OFFSET_ONLY_DIAGNOSTICS: u16 = 3;
 
-    use crate::document::Document;
+    use crate::document::{Document, DocumentInlayHintsId};
     use crate::editor::{Config, GutterConfig, GutterLineNumbersConfig, GutterType};
 
     #[test]
@@ -1122,6 +1128,214 @@ mod tests {
                 true
             ),
             Some(7)
+        );
+    }
+
+    #[test]
+    fn text_coordinates_preserve_document_edges_across_layout_features() {
+        use helix_core::text_annotations::InlineAnnotation;
+
+        let mut view = View::new(DocumentId::default(), GutterConfig::default());
+        view.area = Rect::new(0, 0, 20, 10);
+        let rope = Rope::from_str("a\t界\r\nabcdef");
+        let mut doc = Document::from(
+            rope,
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        doc.ensure_view_init(view.id);
+
+        let format = TextFormat::default();
+        let no_annotations = TextAnnotations::default();
+
+        for (edge, position) in [
+            (0, Position::new(0, 0)),
+            (1, Position::new(0, 1)),
+            (2, Position::new(0, 4)),
+            (3, Position::new(0, 6)),
+            (5, Position::new(1, 0)),
+            (doc.text().len_chars(), Position::new(1, 6)),
+        ] {
+            assert_eq!(
+                view.screen_coords_at_pos(&doc, doc.text().slice(..), edge),
+                Some(position)
+            );
+        }
+
+        // Every cell occupied by a tab or wide grapheme maps to its left edge.
+        for column in 1..4 {
+            assert_eq!(
+                view.text_pos_at_visual_coords(
+                    &doc,
+                    0,
+                    column,
+                    format.clone(),
+                    &no_annotations,
+                    true,
+                ),
+                Some(1)
+            );
+        }
+        assert_eq!(
+            view.text_pos_at_visual_coords(&doc, 0, 4, format.clone(), &no_annotations, true),
+            Some(2)
+        );
+        assert_eq!(
+            view.text_pos_at_visual_coords(&doc, 0, 5, format.clone(), &no_annotations, true),
+            Some(2)
+        );
+        assert_eq!(
+            view.text_pos_at_visual_coords(&doc, 0, 6, format.clone(), &no_annotations, true),
+            Some(3)
+        );
+
+        // CRLF occupies one visual newline and the next row starts after both scalars.
+        assert_eq!(
+            view.text_pos_at_visual_coords(&doc, 1, 0, format.clone(), &no_annotations, true),
+            Some(5)
+        );
+
+        // Inline virtual text does not create document positions: its cells
+        // retain the preceding document edge and the following cell advances.
+        let inline = [InlineAnnotation::new(6, "hint")];
+        let mut annotations = TextAnnotations::default();
+        annotations.add_inline_annotations(&inline, None);
+        for column in 1..5 {
+            assert_eq!(
+                view.text_pos_at_visual_coords(
+                    &doc,
+                    1,
+                    column,
+                    format.clone(),
+                    &annotations,
+                    true,
+                ),
+                Some(5)
+            );
+        }
+        assert_eq!(
+            view.text_pos_at_visual_coords(&doc, 1, 5, format.clone(), &annotations, true,),
+            Some(6)
+        );
+
+        // Soft-wrapped rows still return scalar edges from the underlying document.
+        let wrapped = TextFormat {
+            soft_wrap: true,
+            viewport_width: 4,
+            ..TextFormat::default()
+        };
+        let mut wrapped_doc = Document::from(
+            Rope::from_str("ab cd ef"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        wrapped_doc.ensure_view_init(view.id);
+        assert_eq!(
+            view.text_pos_at_visual_coords(
+                &wrapped_doc,
+                1,
+                0,
+                wrapped.clone(),
+                &no_annotations,
+                true,
+            ),
+            Some(3)
+        );
+
+        // Coordinates at and beyond the final visual cell clamp to EOF.
+        let eof = doc.text().len_chars();
+        assert_eq!(
+            view.text_pos_at_visual_coords(&doc, 2, 20, format, &no_annotations, true),
+            Some(eof)
+        );
+
+        let mut inlay_doc = Document::from(
+            Rope::from_str("ab"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        inlay_doc.ensure_view_init(view.id);
+        let mut hints = DocumentInlayHints::empty_with_id(DocumentInlayHintsId {
+            first_line: 0,
+            last_line: 0,
+        });
+        hints
+            .other_inlay_hints
+            .push(InlineAnnotation::new(1, "hint"));
+        inlay_doc.set_inlay_hints(view.id, hints);
+        let inlay_position = view
+            .screen_coords_at_pos(&inlay_doc, inlay_doc.text().slice(..), 1)
+            .unwrap();
+        assert_eq!(inlay_position, Position::new(0, 5));
+        assert_eq!(
+            view.pos_at_visual_coords(
+                &inlay_doc,
+                inlay_position.row as u16,
+                inlay_position.col as u16,
+                true,
+            ),
+            Some(1)
+        );
+
+        let mut soft_wrap_config = Config::default();
+        soft_wrap_config.soft_wrap.enable = Some(true);
+        soft_wrap_config.soft_wrap.wrap_indicator = Some(String::new());
+        view.area = Rect::new(0, 0, 20, 10);
+        let mut soft_wrap_doc = Document::from(
+            Rope::from_str("ab cd ef gh ij kl mn"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(soft_wrap_config))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        soft_wrap_doc.ensure_view_init(view.id);
+        let wrapped_position = view
+            .screen_coords_at_pos(&soft_wrap_doc, soft_wrap_doc.text().slice(..), 12)
+            .unwrap();
+        assert_ne!(wrapped_position.row, 0);
+        assert_eq!(
+            view.pos_at_visual_coords(
+                &soft_wrap_doc,
+                wrapped_position.row as u16,
+                wrapped_position.col as u16,
+                true,
+            ),
+            Some(12)
+        );
+
+        let mut clipped_doc = Document::from(
+            Rope::from_str("0123456789abcdefghij"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        clipped_doc.ensure_view_init(view.id);
+        clipped_doc.set_view_offset(
+            view.id,
+            ViewPosition {
+                anchor: 0,
+                horizontal_offset: 5,
+                ..ViewPosition::default()
+            },
+        );
+        let width = view.inner_area(&clipped_doc).width as usize;
+        assert_eq!(
+            view.screen_coords_at_pos(&clipped_doc, clipped_doc.text().slice(..), 4),
+            None
+        );
+        assert_eq!(
+            view.screen_coords_at_pos(&clipped_doc, clipped_doc.text().slice(..), 5),
+            Some(Position::new(0, 0))
+        );
+        assert_eq!(
+            view.screen_coords_at_pos(&clipped_doc, clipped_doc.text().slice(..), 5 + width - 1,),
+            Some(Position::new(0, width - 1))
+        );
+        assert_eq!(
+            view.screen_coords_at_pos(&clipped_doc, clipped_doc.text().slice(..), 5 + width,),
+            None
         );
     }
 

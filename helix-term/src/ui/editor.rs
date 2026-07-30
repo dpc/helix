@@ -32,13 +32,136 @@ use helix_view::{
     keyboard::{KeyCode, KeyModifiers},
     Document, Editor, Theme, View,
 };
-use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
+use std::{collections::BTreeMap, mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
 
 use tui::{buffer::Buffer as Surface, text::Span};
 
 #[cfg(test)]
 #[path = "editor/edge_tests.rs"]
 mod edge_tests;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CursorRenderPlan {
+    manual_primary: bool,
+    manual_secondary: bool,
+    terminal_kind: CursorKind,
+}
+
+impl CursorRenderPlan {
+    fn new(cursor_kind: CursorKind, terminal_focused: bool) -> Self {
+        if !terminal_focused {
+            return Self {
+                manual_primary: true,
+                manual_secondary: true,
+                terminal_kind: CursorKind::Hidden,
+            };
+        }
+
+        if cursor_kind == CursorKind::Block {
+            Self {
+                manual_primary: true,
+                manual_secondary: true,
+                terminal_kind: CursorKind::Hidden,
+            }
+        } else {
+            Self {
+                manual_primary: false,
+                manual_secondary: true,
+                terminal_kind: cursor_kind,
+            }
+        }
+    }
+
+    fn renders_manually(self, primary: bool) -> bool {
+        if primary {
+            self.manual_primary
+        } else {
+            self.manual_secondary
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ManualCursorMarker {
+    Document(ops::Range<usize>),
+    Eof(usize),
+}
+
+impl ManualCursorMarker {
+    fn at(text: helix_core::RopeSlice<'_>, head: usize) -> Self {
+        if head == text.len_chars() {
+            Self::Eof(head)
+        } else {
+            Self::Document(head..next_grapheme_boundary(text, head))
+        }
+    }
+}
+
+#[derive(Debug)]
+struct EofCursorMarker {
+    highlight: syntax::Highlight,
+    position: usize,
+}
+
+#[derive(Debug, Default)]
+struct DocumentSelectionHighlights {
+    overlays: Vec<OverlayHighlights>,
+    eof_cursors: Vec<EofCursorMarker>,
+}
+
+fn begin_mouse_selection(press: &mut Option<Range>, drag_seen: &mut bool, range: Range) {
+    *press = Some(range);
+    *drag_seen = false;
+}
+
+fn cancel_mouse_selection(press: &mut Option<Range>, drag_seen: &mut bool) {
+    press.take();
+    *drag_seen = false;
+}
+
+fn drag_mouse_selection(press: Option<Range>, drag_seen: &mut bool) {
+    if press.is_some() {
+        *drag_seen = true;
+    }
+}
+
+fn finish_mouse_selection(press: &mut Option<Range>, drag_seen: &mut bool, current: Range) -> bool {
+    let gesture_started = press.take().is_some();
+    let drag_seen = std::mem::take(drag_seen);
+    gesture_started && drag_seen && !current.is_empty()
+}
+
+fn extend_primary_selection(
+    mut selection: Selection,
+    text: helix_core::RopeSlice<'_>,
+    position: usize,
+) -> Selection {
+    *selection.primary_mut() = selection.primary().put_cursor(text, position, true);
+    selection
+}
+
+fn cursor_surface_position(inner: Rect, position: Position) -> Option<(u16, u16)> {
+    if inner.width as usize <= position.col || inner.height as usize <= position.row {
+        return None;
+    }
+    Some((
+        inner.x.checked_add(position.col as u16)?,
+        inner.y.checked_add(position.row as u16)?,
+    ))
+}
+
+fn render_manual_cursor(
+    surface: &mut Surface,
+    inner: Rect,
+    position: Position,
+    style: Style,
+) -> bool {
+    let Some(surface_position) = cursor_surface_position(inner, position) else {
+        return false;
+    };
+    surface[surface_position].set_style(style);
+    true
+}
 
 fn diagnostic_range_owns_edge(range: helix_core::diagnostic::Range, edge: usize) -> bool {
     if range.start == range.end {
@@ -162,6 +285,7 @@ impl EditorView {
         }
 
         Self::doc_diagnostics_highlights_into(doc, theme, &mut overlays);
+        let mut eof_cursor_highlights = Vec::new();
 
         if is_focused {
             if config.lsp.auto_document_highlight {
@@ -172,14 +296,16 @@ impl EditorView {
             if let Some(tabstops) = Self::tabstop_highlights(doc, theme) {
                 overlays.push(tabstops);
             }
-            overlays.extend(Self::doc_selection_highlights(
+            let selection_highlights = Self::doc_selection_highlights(
                 editor.mode(),
                 doc,
                 view,
                 theme,
                 &config.cursor_shape,
                 self.terminal_focused,
-            ));
+            );
+            overlays.extend(selection_highlights.overlays);
+            eof_cursor_highlights = selection_highlights.eof_cursors;
             if let Some(overlay) = Self::highlight_focused_view_elements(view, doc, theme) {
                 overlays.push(overlay);
             }
@@ -234,6 +360,13 @@ impl EditorView {
             theme,
             decorations,
         );
+        for marker in eof_cursor_highlights {
+            let Some(pos) = view.screen_coords_at_pos(doc, doc.text().slice(..), marker.position)
+            else {
+                continue;
+            };
+            render_manual_cursor(surface, inner, pos, theme.highlight(marker.highlight));
+        }
 
         // if we're not at the edge of the screen, draw a right border
         if viewport.right() != view.area.right() {
@@ -545,27 +678,27 @@ impl EditorView {
         Some(OverlayHighlights::Homogeneous { highlight, ranges })
     }
 
-    /// Get highlight spans for selections in a document view.
+    /// Get document overlays and virtual EOF markers for selections in a document view.
     ///
     /// With beam cursor semantics:
     /// - The primary cursor is drawn by the terminal (for Bar/Underline) or manually (for Block)
     /// - Selections are rendered as highlighted spans between anchor and head
     /// - Secondary cursors are marked with cursor highlighting (since terminal can only show one cursor)
     /// - Zero-width selections (cursor only, anchor == head) show just the cursor marker
-    pub fn doc_selection_highlights(
+    fn doc_selection_highlights(
         mode: Mode,
         doc: &Document,
         view: &View,
         theme: &Theme,
         cursor_shape_config: &CursorShapeConfig,
         is_terminal_focused: bool,
-    ) -> Vec<OverlayHighlights> {
+    ) -> DocumentSelectionHighlights {
         let text = doc.text().slice(..);
         let selection = doc.selection(view.id);
         let primary_idx = selection.primary_index();
 
         let cursorkind = cursor_shape_config.from_mode(mode);
-        let cursor_is_block = cursorkind == CursorKind::Block;
+        let render_plan = CursorRenderPlan::new(cursorkind, is_terminal_focused);
 
         let selection_scope = theme
             .find_highlight_exact("ui.selection")
@@ -598,7 +731,7 @@ impl EditorView {
         // Use separate overlay collections for selections and cursors to avoid
         // overlap issues in the Heterogenous overlay (which requires non-overlapping spans)
         let mut selection_spans = Vec::new();
-        let mut cursor_spans = Vec::new();
+        let mut cursor_markers = BTreeMap::new();
 
         for (i, range) in selection.iter().enumerate() {
             let selection_is_primary = i == primary_idx;
@@ -621,48 +754,50 @@ impl EditorView {
             // - For primary cursor with beam/underline: terminal draws it (unless unfocused)
             // - For secondary cursors: we need to draw a marker since terminal can only show one cursor
             // - For block cursor: we draw all cursors manually
-            let needs_cursor_highlight = !selection_is_primary  // secondary cursors always need manual rendering
-                || cursor_is_block  // block cursors are drawn manually
-                || !is_terminal_focused; // unfocused needs manual cursor
-
-            if needs_cursor_highlight {
-                // For selections, put the cursor highlight on the last/first char INSIDE the selection
-                // For empty selections (cursor only), highlight the char after cursor position
-                use helix_core::graphemes::prev_grapheme_boundary;
-
-                let (cursor_start, cursor_end) = if sel_start == sel_end {
-                    // Empty selection: highlight char after cursor
-                    let pos = range.head;
-                    let end = if pos >= text.len_chars() {
-                        pos + 1
-                    } else {
-                        next_grapheme_boundary(text, pos)
-                    };
-                    (pos, end)
-                } else if range.head > range.anchor {
-                    // Forward selection: cursor on last char of selection (just before head)
-                    let start = prev_grapheme_boundary(text, range.head);
-                    (start, range.head)
-                } else {
-                    // Backward selection: cursor on first char of selection (at head)
-                    (range.head, next_grapheme_boundary(text, range.head))
-                };
-                cursor_spans.push((cursor_scope, cursor_start..cursor_end));
+            if render_plan.renders_manually(selection_is_primary) {
+                let candidate = (
+                    selection_is_primary,
+                    cursor_scope,
+                    ManualCursorMarker::at(text, range.head),
+                );
+                cursor_markers
+                    .entry(range.head)
+                    .and_modify(|existing| {
+                        if selection_is_primary {
+                            *existing = candidate.clone();
+                        }
+                    })
+                    .or_insert(candidate);
             }
         }
 
-        let mut result = Vec::new();
+        let mut cursor_spans = Vec::new();
+        let mut eof_cursors = Vec::new();
+        for (_, (_, highlight, marker)) in cursor_markers {
+            match marker {
+                ManualCursorMarker::Document(range) => cursor_spans.push((highlight, range)),
+                ManualCursorMarker::Eof(position) => eof_cursors.push(EofCursorMarker {
+                    highlight,
+                    position,
+                }),
+            }
+        }
+
+        let mut overlays = Vec::new();
         if !selection_spans.is_empty() {
-            result.push(OverlayHighlights::Heterogenous {
+            overlays.push(OverlayHighlights::Heterogenous {
                 highlights: selection_spans,
             });
         }
         if !cursor_spans.is_empty() {
-            result.push(OverlayHighlights::Heterogenous {
+            overlays.push(OverlayHighlights::Heterogenous {
                 highlights: cursor_spans,
             });
         }
-        result
+        DocumentSelectionHighlights {
+            overlays,
+            eof_cursors,
+        }
     }
 
     /// Render brace match, etc (meant for the focused view only)
@@ -1401,6 +1536,7 @@ impl EditorView {
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let editor = &mut cxt.editor;
+                cancel_mouse_selection(&mut editor.mouse_down_range, &mut editor.mouse_dragged);
 
                 if let Some((pos, view_id)) = pos_and_view(editor, row, column, true) {
                     editor.focus(view_id);
@@ -1412,17 +1548,20 @@ impl EditorView {
                         let selection = doc.selection(view_id).clone();
                         doc.set_selection(view_id, selection.push(Range::point(pos)));
                     } else if editor.mode == Mode::Select {
-                        // Discards non-primary selections for consistent UX with normal mode
-                        let primary = doc.selection(view_id).primary().put_cursor(
+                        let selection = extend_primary_selection(
+                            doc.selection(view_id).clone(),
                             doc.text().slice(..),
                             pos,
-                            true,
                         );
-                        editor.mouse_down_range = Some(primary);
-                        doc.set_selection(view_id, Selection::single(primary.anchor, primary.head));
+                        doc.set_selection(view_id, selection);
                     } else {
                         doc.set_selection(view_id, Selection::point(pos));
                     }
+                    begin_mouse_selection(
+                        &mut editor.mouse_down_range,
+                        &mut editor.mouse_dragged,
+                        doc.selection(view_id).primary(),
+                    );
 
                     if view_id != prev_view_id {
                         self.clear_completion(editor);
@@ -1466,6 +1605,7 @@ impl EditorView {
                 let primary = selection.primary_mut();
                 *primary = primary.put_cursor(doc.text().slice(..), pos, true);
                 doc.set_selection(view.id, selection);
+                drag_mouse_selection(cxt.editor.mouse_down_range, &mut cxt.editor.mouse_dragged);
                 let view_id = view.id;
                 cxt.editor.ensure_cursor_in_view(view_id);
                 EventResult::Consumed(None)
@@ -1496,23 +1636,20 @@ impl EditorView {
 
             MouseEventKind::Up(MouseButton::Left) => {
                 if !config.middle_click_paste {
+                    cancel_mouse_selection(
+                        &mut cxt.editor.mouse_down_range,
+                        &mut cxt.editor.mouse_dragged,
+                    );
                     return EventResult::Ignored(None);
                 }
 
                 let (view, doc) = current!(cxt.editor);
 
-                let should_yank = match cxt.editor.mouse_down_range.take() {
-                    Some(down_range) => doc.selection(view.id).primary() != down_range,
-                    None => {
-                        // This should not happen under normal cases. We fall back to the original
-                        // behavior of yanking on non-single-char selections.
-                        doc.selection(view.id)
-                            .primary()
-                            .slice(doc.text().slice(..))
-                            .len_chars()
-                            > 1
-                    }
-                };
+                let should_yank = finish_mouse_selection(
+                    &mut cxt.editor.mouse_down_range,
+                    &mut cxt.editor.mouse_dragged,
+                    doc.selection(view.id).primary(),
+                );
 
                 if should_yank {
                     commands::yank_main_selection_to_register(
@@ -1891,18 +2028,9 @@ impl Component for EditorView {
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
-        match editor.cursor() {
-            // all block cursors are drawn manually
-            (pos, CursorKind::Block) => {
-                if self.terminal_focused {
-                    (pos, CursorKind::Hidden)
-                } else {
-                    // use terminal cursor when terminal loses focus
-                    (pos, CursorKind::Underline)
-                }
-            }
-            cursor => cursor,
-        }
+        let (pos, cursor_kind) = editor.cursor();
+        let plan = CursorRenderPlan::new(cursor_kind, self.terminal_focused);
+        (pos, plan.terminal_kind)
     }
 }
 

@@ -180,7 +180,6 @@ pub struct TextRenderer<'a> {
     pub indent_guide_char: String,
     pub indent_guide_style: Style,
     pub newline: String,
-    pub selected_newline: String,
     pub nbsp: String,
     pub nnbsp: String,
     pub space: String,
@@ -251,7 +250,6 @@ impl<'a> TextRenderer<'a> {
             surface,
             indent_guide_char: editor_config.indent_guides.character.into(),
             newline,
-            selected_newline: "·".to_owned(),
             nbsp,
             nnbsp,
             space,
@@ -357,14 +355,9 @@ impl<'a> TextRenderer<'a> {
             Grapheme::Other { ref g } if g == "\u{00A0}" => nbsp,
             Grapheme::Other { ref g } if g == "\u{202F}" => nnbsp,
             Grapheme::Other { ref g } => g,
-            Grapheme::Newline => {
-                // Show visible marker for newlines when selected
-                if grapheme_style.overlay_style != Style::default() {
-                    &self.selected_newline
-                } else {
-                    &self.newline
-                }
-            }
+            // Selection and other overlays change only the newline's style. Its
+            // glyph always comes from the configured whitespace characters.
+            Grapheme::Newline => &self.newline,
         };
 
         let in_bounds = self.column_in_bounds(position.col, width);
@@ -587,5 +580,78 @@ impl<'t> OverlayHighlighter<'t> {
             acc.patch(self.theme.highlight(highlight))
         });
         self.update_pos();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
+    use helix_core::{syntax::Loader, Rope};
+    use helix_view::{
+        editor::{Config, WhitespaceRender, WhitespaceRenderValue},
+        theme::DEFAULT_THEME,
+    };
+
+    use super::*;
+
+    fn render_newline(
+        render: WhitespaceRenderValue,
+        overlays: Vec<OverlayHighlights>,
+    ) -> tui::buffer::Cell {
+        let mut config = Config::default();
+        config.whitespace.render = WhitespaceRender::Basic(render);
+        config.whitespace.characters.newline = 'N';
+        let doc = Document::from(
+            Rope::from("\n"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(config))),
+            Arc::new(ArcSwap::from_pointee(Loader::default())),
+        );
+        let area = Rect::new(0, 0, 2, 2);
+        let mut surface = Surface::empty(area);
+        render_document(
+            &mut surface,
+            area,
+            &doc,
+            ViewPosition::default(),
+            &TextAnnotations::default(),
+            None,
+            overlays,
+            &DEFAULT_THEME,
+            DecorationManager::default(),
+        );
+        surface[(0, 0)].clone()
+    }
+
+    #[test]
+    fn newline_overlays_preserve_the_configured_glyph() {
+        let selection = DEFAULT_THEME.find_highlight_exact("ui.selection").unwrap();
+        let selected = render_newline(
+            WhitespaceRenderValue::All,
+            vec![OverlayHighlights::single(selection, 0..1)],
+        );
+        assert_eq!(selected.symbol.as_str(), "N");
+
+        let expected_style = DEFAULT_THEME
+            .get("ui.text")
+            .patch(DEFAULT_THEME.get("ui.virtual.whitespace"))
+            .patch(DEFAULT_THEME.highlight(selection));
+        assert_eq!(selected.style().fg, expected_style.fg);
+        assert_eq!(selected.style().bg, expected_style.bg);
+        assert_eq!(selected.style().add_modifier, expected_style.add_modifier);
+
+        let diagnostic = DEFAULT_THEME
+            .find_highlight_exact("diagnostic.error")
+            .unwrap();
+        let diagnosed = render_newline(
+            WhitespaceRenderValue::All,
+            vec![OverlayHighlights::single(diagnostic, 0..1)],
+        );
+        assert_eq!(diagnosed.symbol.as_str(), "N");
+
+        let hidden = render_newline(WhitespaceRenderValue::None, Vec::new());
+        assert_eq!(hidden.symbol.as_str(), " ");
     }
 }
