@@ -6,6 +6,7 @@
   - [Package Managers](./package-managers.md)
   - [Building from source](./building-from-source.md)
 - [Usage](./usage.md)
+  - [I-beam cursor and edge selections](./ibeam-cursor.md)
   - [Registers](./registers.md)
   - [Surround](./surround.md)
   - [Textobjects](./textobjects.md)

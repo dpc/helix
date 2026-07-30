@@ -20,6 +20,18 @@ Updated languages and queries:
 Packaging:
 -->
 
+# Unreleased
+
+Breaking changes:
+
+* Document the I-beam cursor and edge-selection migration. Document cursors now
+  occupy edges and may be zero-width points, cursor shapes default to `bar`,
+  Normal/Select mode transitions preserve ranges, Insert/Append collapse to the
+  head edge, operators at points use their documented right-hand operands, and
+  paste-before/paste-after both insert at the cursor edge. See the
+  [I-beam cursor and edge-selection model](book/src/ibeam-cursor.md) for the
+  complete compatibility contract.
+
 # 25.07.1 (2025-07-18)
 
 This is a patch release which lowers the GLIBC requirements of the release artifacts published to GitHub ([#13983](https://github.com/helix-editor/helix/pull/13983))
