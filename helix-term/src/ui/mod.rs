@@ -15,6 +15,10 @@ mod statusline;
 mod text;
 mod text_decorations;
 
+#[cfg(test)]
+#[path = "input_cursor_tests.rs"]
+mod input_cursor_tests;
+
 use crate::compositor::Compositor;
 use crate::filter_picker_entry;
 use crate::job::{self, Callback};

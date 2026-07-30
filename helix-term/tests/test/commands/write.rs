@@ -168,7 +168,9 @@ async fn test_buffer_close_concurrent() -> anyhow::Result<()> {
     const RANGE: RangeInclusive<i32> = 1..=1000;
 
     for i in RANGE {
-        let cmd = format!("%c{}<esc>:w!<ret>", i);
+        // Keep the write queue test independent of `change` at an empty EOF point:
+        // delete the previous contents, then enter Insert mode explicitly.
+        let cmd = format!("%di{}<esc>:w!<ret>", i);
         command.push_str(&cmd);
     }
 
@@ -290,7 +292,9 @@ async fn test_write_concurrent() -> anyhow::Result<()> {
         .build()?;
 
     for i in RANGE {
-        let cmd = format!("%c{}<esc>:w!<ret>", i);
+        // Keep the write queue test independent of `change` at an empty EOF point:
+        // delete the previous contents, then enter Insert mode explicitly.
+        let cmd = format!("%di{}<esc>:w!<ret>", i);
         command.push_str(&cmd);
     }
 

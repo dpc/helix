@@ -67,6 +67,10 @@ use arc_swap::{
 pub const DIR_STACK_CAP: usize = 10;
 pub const DEFAULT_AUTO_SAVE_DELAY: u64 = 3000;
 
+#[cfg(test)]
+#[path = "editor/cursor_shape_tests.rs"]
+mod cursor_shape_tests;
+
 fn deserialize_duration_millis<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -828,10 +832,14 @@ pub enum StatusLineElement {
 
 // Cursor shape is read and used on every rendered frame and so needs
 // to be fast. Therefore we avoid a hashmap and use an enum indexed array.
+/// Cosmetic cursor shapes for Normal, Select, and Insert document modes.
+///
+/// Cursor shapes never change edge-based selection or editing semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CursorShapeConfig([CursorKind; 3]);
 
 impl CursorShapeConfig {
+    /// Returns the configured cosmetic cursor shape for `mode`.
     pub fn from_mode(&self, mode: Mode) -> CursorKind {
         self.get(mode as usize).copied().unwrap_or_default()
     }
@@ -876,7 +884,7 @@ impl std::ops::Deref for CursorShapeConfig {
 
 impl Default for CursorShapeConfig {
     fn default() -> Self {
-        // Use beam cursor (Bar) for all modes by default for GUI-like selection behavior
+        // Cursor shape is cosmetic; document selection semantics remain edge-based.
         Self([CursorKind::Bar; 3])
     }
 }

@@ -30,7 +30,9 @@ Breaking changes:
   head edge, operators at points use their documented right-hand operands, and
   paste-before/paste-after both insert at the cursor edge. See the
   [I-beam cursor and edge-selection model](book/src/ibeam-cursor.md) for the
-  complete compatibility contract.
+  complete compatibility contract. Partial `[editor.cursor-shape]` tables now
+  fill every omitted document mode with `bar`; prompt and picker inputs also
+  use a bar cursor independently of document-mode shape overrides.
 
 # 25.07.1 (2025-07-18)
 

@@ -129,12 +129,15 @@ setting a bookmark (bookmarking a location):
 Helix allows [some limited movement in `insert` mode](https://docs.helix-editor.com/keymap.html#insert-mode) without switching to `normal` mode.
 
 Helix uses a bar cursor in both insert mode and normal mode by default.
-This can be adjusted in configuration:
+Cursor shape is cosmetic and does not change Helix's edge-based selection
+semantics. Document modes can be adjusted independently:
 
 ```toml
 [editor.cursor-shape]
-insert = "bar"
+normal = "block"
 ```
 
-> TODO: Mention textobjects, surround, registers
+Any omitted mode remains `"bar"`. Prompt and picker input also keep a bar
+cursor.
 
+> TODO: Mention textobjects, surround, registers

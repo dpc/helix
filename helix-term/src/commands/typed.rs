@@ -3475,7 +3475,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "clipboard-paste-after",
         aliases: &[],
-        doc: "Paste system clipboard at selection heads.",
+        doc: "Paste system clipboard at selection heads. This is an alias of `clipboard-paste-before`.",
         fun: paste_clipboard_after,
         completer: CommandCompleter::none(),
         signature: Signature {
@@ -3486,7 +3486,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "clipboard-paste-before",
         aliases: &[],
-        doc: "Paste system clipboard at selection heads.",
+        doc: "Paste system clipboard at selection heads. This is an alias of `clipboard-paste-after`.",
         fun: paste_clipboard_before,
         completer: CommandCompleter::none(),
         signature: Signature {
@@ -3508,7 +3508,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "primary-clipboard-paste-after",
         aliases: &[],
-        doc: "Paste primary clipboard at selection heads.",
+        doc: "Paste primary clipboard at selection heads. This is an alias of `primary-clipboard-paste-before`.",
         fun: paste_primary_clipboard_after,
         completer: CommandCompleter::none(),
         signature: Signature {
@@ -3519,7 +3519,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "primary-clipboard-paste-before",
         aliases: &[],
-        doc: "Paste primary clipboard at selection heads.",
+        doc: "Paste primary clipboard at selection heads. This is an alias of `primary-clipboard-paste-after`.",
         fun: paste_primary_clipboard_before,
         completer: CommandCompleter::none(),
         signature: Signature {

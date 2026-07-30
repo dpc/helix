@@ -2,7 +2,6 @@ use crate::compositor::{Component, Compositor, Context, Event, EventResult};
 use crate::{alt, ctrl, key, shift, ui};
 use arc_swap::ArcSwap;
 use helix_core::syntax;
-use helix_view::document::Mode;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::KeyCode;
 use std::sync::Arc;
@@ -22,6 +21,8 @@ use helix_view::{
 };
 
 type PromptCharHandler = Box<dyn Fn(&mut Prompt, char, &Context)>;
+
+const INPUT_CURSOR_KIND: CursorKind = CursorKind::Bar;
 
 pub type Completion = (RangeFrom<usize>, Span<'static>);
 type CompletionFn = Box<dyn FnMut(&Editor, &str) -> Vec<Completion>>;
@@ -769,7 +770,7 @@ impl Component for Prompt {
         self.render_prompt(area, surface, cx)
     }
 
-    fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
+    fn cursor(&self, area: Rect, _editor: &Editor) -> (Option<Position>, CursorKind) {
         let area = area
             .clip_left(self.prompt.len() as u16)
             .clip_right(if self.prompt.is_empty() { 2 } else { 0 });
@@ -794,7 +795,7 @@ impl Component for Prompt {
 
         (
             Some(Position::new(area.y as usize + line, col)),
-            editor.config().cursor_shape.from_mode(Mode::Insert),
+            INPUT_CURSOR_KIND,
         )
     }
 }

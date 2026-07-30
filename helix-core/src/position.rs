@@ -255,10 +255,9 @@ pub fn visual_offset_from_anchor(
 /// character.  If `false` it will be just *after* the line ending
 /// character--on the border between the current line and the next.
 ///
-/// Usually you only want `limit_before_line_ending` to be `true` if you're working
-/// with left-side block-cursor positions, as this prevents the the block cursor
-/// from jumping to the next line.  Otherwise you typically want it to be `false`,
-/// such as when dealing with raw anchor/head positions.
+/// Set `limit_before_line_ending` when the requested coordinates must stay on
+/// their named line, such as command-line line/column locations. Leave it unset
+/// when converting an exact document edge that may follow the line ending.
 pub fn pos_at_coords(text: RopeSlice, coords: Position, limit_before_line_ending: bool) -> usize {
     let Position { mut row, col } = coords;
     if limit_before_line_ending {

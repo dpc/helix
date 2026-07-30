@@ -239,7 +239,7 @@ Commands that choose between an explicit selection and cursor-adjacent discovery
 
 ## 15. Configuration and compatibility
 
-**D5 — shape overrides.** Edge semantics are unconditional, while cursor shape remains cosmetic and configurable. The defaults for Normal, Select, Insert, prompt, and picker cursors are `bar`. Users MAY configure `block` or `underline`; those values MUST NOT reactivate block-selection arithmetic.
+**D5 — shape overrides.** Edge semantics are unconditional, while document cursor shape remains cosmetic and configurable. Normal, Select, and Insert cursors default to `bar`; users MAY configure `block` or `underline` for those modes, and those values MUST NOT reactivate block-selection arithmetic. Prompt and picker input cursors use `bar` independently of document-mode overrides.
 
 A partially specified `[editor.cursor-shape]` fills missing modes with the new `bar` default. This is a behavior migration and MUST appear in release notes. Serialization/deserialization tests MUST cover empty, partial, and complete maps.
 

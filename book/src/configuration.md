@@ -17,13 +17,15 @@ line-number = "relative"
 mouse = false
 
 [editor.cursor-shape]
-insert = "bar"
 normal = "block"
 select = "underline"
 
 [editor.file-picker]
 hidden = false
 ```
+
+Cursor shapes affect appearance only. Omitted mode keys use `"bar"`; for
+example, the partial table above leaves Insert mode at its bar default.
 
 You can use a custom configuration file by specifying it with the `-c` or
 `--config` command line argument, for example `hx -c path/to/custom-config.toml`.
@@ -32,4 +34,3 @@ signal to the Helix process, such as by using the command `pkill -USR1 hx`.
 
 Finally, you can have a `config.toml` and a `languages.toml` local to a project by putting it under a `.helix` directory in your repository.
 Its settings will be merged with the configuration directory and the built-in configuration.
-

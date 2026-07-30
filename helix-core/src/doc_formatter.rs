@@ -46,7 +46,7 @@ impl GraphemeSource {
     }
 
     pub fn is_eof(self) -> bool {
-        // all doc chars except the EOF char have non-zero codepoints
+        // Only the virtual EOF placeholder has no document codepoints.
         matches!(self, GraphemeSource::Document { codepoints: 0 })
     }
 
@@ -369,16 +369,14 @@ impl<'t> DocumentFormatter<'t> {
             let mut col = self.visual_pos.col + word_width;
             let char_pos = self.char_pos + word_chars;
             match col.cmp(&(self.text_fmt.viewport_width as usize)) {
-                // The EOF char and newline chars are always selectable in helix. That means
-                // that wrapping happens "too-early" if a word fits a line perfectly. This
-                // is intentional so that all selectable graphemes are always visible (and
-                // therefore the cursor never disappears). However if the user manually set a
-                // lower softwrap width then this is undesirable. Just increasing the viewport-
-                // width by one doesn't work because if a line is wrapped multiple times then
-                // some words may extend past the specified width.
+                // Newlines and the virtual EOF placeholder each occupy a display cell. That
+                // makes wrapping happen early when a word fits a line perfectly, keeping every
+                // cursor edge visible. A manually configured lower soft-wrap width should not
+                // receive that extra cell. Increasing the viewport width globally does not work
+                // because repeated wraps could then exceed the configured width.
                 //
                 // So we special case a word that ends exactly at line bounds and is followed
-                // by a newline/eof character here.
+                // by a newline or the EOF placeholder here.
                 Ordering::Equal
                     if self.text_fmt.soft_wrap_at_text_width
                         && self

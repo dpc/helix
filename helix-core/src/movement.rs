@@ -321,7 +321,7 @@ fn word_move(slice: RopeSlice, range: Range, count: usize, target: WordMotionTar
 
     // With edge-based (I-shaped) cursor, start from the exact cursor
     // position. The anchor is set to head so range_to_target starts
-    // iterating from the cursor without any block-cursor expansion.
+    // iterating from the exact cursor edge.
     let start_range = Range::point(range.head);
 
     // Do the main work.

@@ -8,8 +8,7 @@
 //! This allows for zero-width selections (cursor position only) like in GUI editors.
 use crate::{
     graphemes::{
-        ensure_grapheme_boundary_next, ensure_grapheme_boundary_prev, next_grapheme_boundary,
-        prev_grapheme_boundary,
+        ensure_grapheme_boundary_next, ensure_grapheme_boundary_prev, prev_grapheme_boundary,
     },
     line_ending::get_line_ending,
     movement::Direction,
@@ -361,32 +360,6 @@ impl Range {
             } else {
                 None
             },
-        }
-    }
-
-    /// Compute a possibly new range from this range, attempting to ensure
-    /// a minimum range width of 1 char by shifting the head in the forward
-    /// direction as needed.
-    ///
-    /// This method will never shift the anchor, and will only shift the
-    /// head in the forward direction.  Therefore, this method can fail
-    /// at ensuring the minimum width if and only if the passed range is
-    /// both zero-width and at the end of the `RopeSlice`.
-    ///
-    /// If the input range is grapheme-boundary aligned, the returned range
-    /// will also be.  Specifically, if the head needs to shift to achieve
-    /// the minimum width, it will shift to the next grapheme boundary.
-    #[must_use]
-    #[inline]
-    pub fn min_width_1(&self, slice: RopeSlice) -> Self {
-        if self.anchor == self.head {
-            Range {
-                anchor: self.anchor,
-                head: next_grapheme_boundary(slice, self.head),
-                old_visual_position: self.old_visual_position,
-            }
-        } else {
-            *self
         }
     }
 
@@ -1261,37 +1234,6 @@ mod test {
         assert_eq!(Range::new(4, 2).grapheme_aligned(s), Range::new(4, 2));
         assert_eq!(Range::new(5, 3).grapheme_aligned(s), Range::new(6, 3));
         assert_eq!(Range::new(6, 4).grapheme_aligned(s), Range::new(6, 4));
-    }
-
-    #[test]
-    fn test_min_width_1() {
-        let r = Rope::from_str("\r\nHi\r\n");
-        let s = r.slice(..);
-
-        // Zero-width.
-        assert_eq!(Range::new(0, 0).min_width_1(s), Range::new(0, 2));
-        assert_eq!(Range::new(1, 1).min_width_1(s), Range::new(1, 2));
-        assert_eq!(Range::new(2, 2).min_width_1(s), Range::new(2, 3));
-        assert_eq!(Range::new(3, 3).min_width_1(s), Range::new(3, 4));
-        assert_eq!(Range::new(4, 4).min_width_1(s), Range::new(4, 6));
-        assert_eq!(Range::new(5, 5).min_width_1(s), Range::new(5, 6));
-        assert_eq!(Range::new(6, 6).min_width_1(s), Range::new(6, 6));
-
-        // Forward.
-        assert_eq!(Range::new(0, 1).min_width_1(s), Range::new(0, 1));
-        assert_eq!(Range::new(1, 2).min_width_1(s), Range::new(1, 2));
-        assert_eq!(Range::new(2, 3).min_width_1(s), Range::new(2, 3));
-        assert_eq!(Range::new(3, 4).min_width_1(s), Range::new(3, 4));
-        assert_eq!(Range::new(4, 5).min_width_1(s), Range::new(4, 5));
-        assert_eq!(Range::new(5, 6).min_width_1(s), Range::new(5, 6));
-
-        // Reverse.
-        assert_eq!(Range::new(1, 0).min_width_1(s), Range::new(1, 0));
-        assert_eq!(Range::new(2, 1).min_width_1(s), Range::new(2, 1));
-        assert_eq!(Range::new(3, 2).min_width_1(s), Range::new(3, 2));
-        assert_eq!(Range::new(4, 3).min_width_1(s), Range::new(4, 3));
-        assert_eq!(Range::new(5, 4).min_width_1(s), Range::new(5, 4));
-        assert_eq!(Range::new(6, 5).min_width_1(s), Range::new(6, 5));
     }
 
     #[test]

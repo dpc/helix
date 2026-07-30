@@ -196,12 +196,12 @@
 | `replace_with_yanked` | Replace with yanked text | normal: `` R ``, select: `` R `` |
 | `replace_selections_with_clipboard` | Replace selections by clipboard content | normal: `` <space>R ``, select: `` <space>R `` |
 | `replace_selections_with_primary_clipboard` | Replace selections by primary clipboard |  |
-| `paste_after` | Paste at selection heads | normal: `` p ``, select: `` p `` |
-| `paste_before` | Paste at selection heads | normal: `` P ``, select: `` P `` |
-| `paste_clipboard_after` | Paste clipboard at selection heads | normal: `` <space>p ``, select: `` <space>p `` |
-| `paste_clipboard_before` | Paste clipboard at selection heads | normal: `` <space>P ``, select: `` <space>P `` |
-| `paste_primary_clipboard_after` | Paste primary clipboard at selection heads |  |
-| `paste_primary_clipboard_before` | Paste primary clipboard at selection heads |  |
+| `paste_after` | Paste at selection heads (same as paste_before) | normal: `` p ``, select: `` p `` |
+| `paste_before` | Paste at selection heads (same as paste_after) | normal: `` P ``, select: `` P `` |
+| `paste_clipboard_after` | Paste clipboard at selection heads (same as paste_clipboard_before) | normal: `` <space>p ``, select: `` <space>p `` |
+| `paste_clipboard_before` | Paste clipboard at selection heads (same as paste_clipboard_after) | normal: `` <space>P ``, select: `` <space>P `` |
+| `paste_primary_clipboard_after` | Paste primary clipboard at selection heads (same as paste_primary_clipboard_before) |  |
+| `paste_primary_clipboard_before` | Paste primary clipboard at selection heads (same as paste_primary_clipboard_after) |  |
 | `indent` | Indent selection | normal: `` <gt> ``, select: `` <gt> `` |
 | `unindent` | Unindent selection | normal: `` <lt> ``, select: `` <lt> `` |
 | `format_selections` | Format selection | normal: `` = ``, select: `` = `` |

@@ -204,8 +204,12 @@ The following statusline elements can be configured:
 
 ### `[editor.cursor-shape]` Section
 
-Defines the shape of cursor in each mode.
+Defines the cosmetic shape of the document cursor in each mode. Cursor shape
+does not change edge-based movement, selection, or editing behavior.
 Valid values for these options are `block`, `bar`, `underline`, or `hidden`.
+
+Missing keys default to `"bar"`. Prompt and picker input cursors always use a
+bar independently of these document-mode overrides.
 
 > 💡 Due to limitations of the terminal environment, only the primary cursor can
 > change shape.
