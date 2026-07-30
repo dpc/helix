@@ -47,3 +47,23 @@ async fn reverse_selection_contents_with_count() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reverse_selection_contents_preserves_primary_with_eof_point() -> anyhow::Result<()> {
+    test((
+        "#[a|]#\n#(b|)#\n#(c|)#\n#(|)#",
+        CMD,
+        "#(c|)#\n#(b|)#\n#[a|]#\n#(|)#",
+        LineFeedHandling::AsIs,
+    ))
+    .await?;
+    test((
+        "#(a|)#\n#(b|)#\n#(c|)#\n#[|]#",
+        CMD,
+        "#(c|)#\n#(b|)#\n#(a|)#\n#[|]#",
+        LineFeedHandling::AsIs,
+    ))
+    .await?;
+
+    Ok(())
+}

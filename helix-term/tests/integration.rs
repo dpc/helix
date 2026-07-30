@@ -2,7 +2,12 @@
 mod test {
     mod helpers;
 
-    use helix_core::{syntax::config::AutoPairConfig, Selection};
+    use helix_core::{
+        indent::IndentStyle,
+        snippets::{ActiveSnippet, Snippet, SnippetRenderCtx},
+        syntax::config::AutoPairConfig,
+        Range, Selection,
+    };
     use helix_term::config::Config;
 
     use indoc::indoc;
@@ -11,7 +16,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn hello_world() -> anyhow::Result<()> {
-        test(("#[\n|]#", "ihello world<esc>", "hello world#[|\n]#")).await?;
+        test(("#[|]#", "ihello world<esc>", "hello world#[|]#")).await?;
         Ok(())
     }
 

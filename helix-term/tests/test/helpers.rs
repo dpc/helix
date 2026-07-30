@@ -19,9 +19,13 @@ use tempfile::NamedTempFile;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 #[cfg(windows)]
-use crossterm::event::{Event, KeyEvent};
+use crossterm::event::{
+    Event, KeyEvent, KeyModifiers as NativeModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 #[cfg(not(windows))]
-use termina::event::{Event, KeyEvent};
+use termina::event::{
+    Event, KeyEvent, Modifiers as NativeModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 
 /// Specify how to set up the input text with line feeds
 #[derive(Clone, Debug)]
@@ -71,6 +75,7 @@ pub struct TestCase {
     pub out_text: String,
     pub out_selection: Selection,
 
+    #[allow(dead_code)]
     pub line_feed_handling: LineFeedHandling,
 }
 
@@ -122,23 +127,40 @@ pub async fn test_key_sequences(
     inputs: Vec<(Option<&str>, Option<&dyn Fn(&Application)>)>,
     should_exit: bool,
 ) -> anyhow::Result<()> {
+    let mut event_inputs = Vec::with_capacity(inputs.len());
+    for (keys, test_fn) in inputs {
+        let events = keys
+            .map(parse_macro)
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|key| Event::Key(KeyEvent::from(key)))
+            .collect();
+        event_inputs.push((events, test_fn));
+    }
+    test_event_sequences(app, event_inputs, should_exit).await
+}
+
+#[allow(clippy::type_complexity)]
+pub async fn test_event_sequences(
+    app: &mut Application,
+    inputs: Vec<(Vec<Event>, Option<&dyn Fn(&Application)>)>,
+    should_exit: bool,
+) -> anyhow::Result<()> {
     const TIMEOUT: Duration = Duration::from_millis(500);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);
     let num_inputs = inputs.len();
 
-    for (i, (in_keys, test_fn)) in inputs.into_iter().enumerate() {
+    for (i, (events, test_fn)) in inputs.into_iter().enumerate() {
         let (view, doc) = current_ref!(app.editor);
         let state = test::plain(doc.text().slice(..), doc.selection(view.id));
 
         log::debug!("executing test with document state:\n\n-----\n\n{}", state);
 
-        if let Some(in_keys) = in_keys {
-            for key_event in parse_macro(in_keys)?.into_iter() {
-                let key = Event::Key(KeyEvent::from(key_event));
-                log::trace!("sending key: {:?}", key);
-                tx.send(Ok(key))?;
-            }
+        for event in events {
+            log::trace!("sending event: {:?}", event);
+            tx.send(Ok(event))?;
         }
 
         let app_exited = !app.event_loop_until_idle(&mut rx_stream).await;
@@ -191,6 +213,19 @@ pub async fn test_key_sequences(
     }
 
     Ok(())
+}
+
+pub fn paste_event(contents: impl Into<String>) -> Event {
+    Event::Paste(contents.into())
+}
+
+pub fn middle_click_event(row: u16, column: u16) -> Event {
+    Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Middle),
+        column,
+        row,
+        modifiers: NativeModifiers::NONE,
+    })
 }
 
 pub async fn test_key_sequence_with_input_text<T: Into<TestCase>>(

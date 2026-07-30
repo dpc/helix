@@ -174,6 +174,10 @@ pub fn handle_delete(doc: &Rope, range: &Range) -> Option<(Deletion, Range)> {
     let end_prev = graphemes::prev_grapheme_boundary(text, cursor);
 
     let delete = (end_prev, end_next);
+    if range.is_empty() {
+        return Some((delete, Range::point(end_prev)));
+    }
+
     let size_delete = end_next - end_prev;
     let next_head = graphemes::next_grapheme_boundary(text, range.head) - size_delete;
 
@@ -426,3 +430,6 @@ fn handle_insert_same(doc: &Rope, range: &Range, pair: &Pair) -> Option<(Change,
 
     Some(result)
 }
+
+#[cfg(test)]
+mod tests;

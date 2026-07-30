@@ -177,8 +177,6 @@ pub struct Document {
     encoding: &'static encoding::Encoding,
     has_bom: bool,
 
-    pub restore_cursor: bool,
-
     /// Current indent style.
     pub indent_style: IndentStyle,
     editor_config: EditorConfig,
@@ -423,7 +421,6 @@ impl fmt::Debug for Document {
             .field("view_data", &self.view_data)
             .field("path", &self.path)
             .field("encoding", &self.encoding)
-            .field("restore_cursor", &self.restore_cursor)
             .field("syntax", &self.syntax)
             .field("language", &self.language)
             .field("changes", &self.changes)
@@ -832,7 +829,6 @@ impl Document {
             indent_style: DEFAULT_INDENT,
             editor_config: EditorConfig::default(),
             line_ending,
-            restore_cursor: false,
             syntax: None,
             language: None,
             changes,

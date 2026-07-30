@@ -501,12 +501,12 @@ impl MappableCommand {
         replace_with_yanked, "Replace with yanked text",
         replace_selections_with_clipboard, "Replace selections by clipboard content",
         replace_selections_with_primary_clipboard, "Replace selections by primary clipboard",
-        paste_after, "Paste after selection",
-        paste_before, "Paste before selection",
-        paste_clipboard_after, "Paste clipboard after selections",
-        paste_clipboard_before, "Paste clipboard before selections",
-        paste_primary_clipboard_after, "Paste primary clipboard after selections",
-        paste_primary_clipboard_before, "Paste primary clipboard before selections",
+        paste_after, "Paste at selection heads",
+        paste_before, "Paste at selection heads",
+        paste_clipboard_after, "Paste clipboard at selection heads",
+        paste_clipboard_before, "Paste clipboard at selection heads",
+        paste_primary_clipboard_after, "Paste primary clipboard at selection heads",
+        paste_primary_clipboard_before, "Paste primary clipboard at selection heads",
         indent, "Indent selection",
         unindent, "Unindent selection",
         format_selections, "Format selection",
@@ -969,50 +969,42 @@ fn extend_to_line_start(cx: &mut Context) {
 }
 
 fn kill_to_line_start(cx: &mut Context) {
-    delete_by_selection_insert_mode(
-        cx,
-        move |text, range| {
-            let line = range.cursor_line(text);
-            let first_char = text.line_to_char(line);
-            let anchor = range.cursor(text);
-            let head = if anchor == first_char && line != 0 {
-                // select until previous line
-                line_end_char_index(&text, line - 1)
-            } else if let Some(pos) = text.line(line).first_non_whitespace_char() {
-                if first_char + pos < anchor {
-                    // select until first non-blank in line if cursor is after it
-                    first_char + pos
-                } else {
-                    // select until start of line
-                    first_char
-                }
+    delete_by_selection_insert_mode(cx, move |text, range| {
+        let line = range.cursor_line(text);
+        let first_char = text.line_to_char(line);
+        let anchor = range.cursor(text);
+        let head = if anchor == first_char && line != 0 {
+            // select until previous line
+            line_end_char_index(&text, line - 1)
+        } else if let Some(pos) = text.line(line).first_non_whitespace_char() {
+            if first_char + pos < anchor {
+                // select until first non-blank in line if cursor is after it
+                first_char + pos
             } else {
                 // select until start of line
                 first_char
-            };
-            (head, anchor)
-        },
-        Direction::Backward,
-    );
+            }
+        } else {
+            // select until start of line
+            first_char
+        };
+        (head, anchor)
+    });
 }
 
 fn kill_to_line_end(cx: &mut Context) {
-    delete_by_selection_insert_mode(
-        cx,
-        |text, range| {
-            let line = range.cursor_line(text);
-            let line_end_pos = line_end_char_index(&text, line);
-            let pos = range.cursor(text);
+    delete_by_selection_insert_mode(cx, |text, range| {
+        let line = range.cursor_line(text);
+        let line_end_pos = line_end_char_index(&text, line);
+        let pos = range.cursor(text);
 
-            // if the cursor is on the newline char delete that
-            if pos == line_end_pos {
-                (pos, text.line_to_char(line + 1))
-            } else {
-                (pos, line_end_pos)
-            }
-        },
-        Direction::Forward,
-    );
+        // if the cursor is on the newline char delete that
+        if pos == line_end_pos {
+            (pos, text.line_to_char(line + 1))
+        } else {
+            (pos, line_end_pos)
+        }
+    });
 }
 
 fn goto_first_nonwhitespace(cx: &mut Context) {
@@ -1053,9 +1045,12 @@ fn goto_first_nonwhitespace_impl(view: &mut View, doc: &mut Document, movement: 
 fn trim_selections(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
+    let original = doc.selection(view.id).clone();
+    let Some(selection) = effective_char_selection(text, &original) else {
+        return;
+    };
 
-    let ranges: SmallVec<[Range; 1]> = doc
-        .selection(view.id)
+    let ranges: SmallVec<[Range; 1]> = selection
         .iter()
         .filter_map(|range| {
             if range.is_empty() || range.slice(text).chars().all(|ch| ch.is_whitespace()) {
@@ -1069,13 +1064,18 @@ fn trim_selections(cx: &mut Context) {
         })
         .collect();
 
-    if !ranges.is_empty() {
-        let primary = doc.selection(view.id).primary();
+    let transformed = if !ranges.is_empty() {
+        let primary = selection.primary();
         let idx = ranges
             .iter()
             .position(|range| range.overlaps(&primary))
             .unwrap_or(ranges.len() - 1);
-        doc.set_selection(view.id, Selection::new(ranges, idx));
+        Some(Selection::new(ranges, idx))
+    } else {
+        None
+    };
+    if let Some(selection) = restore_no_operand_ranges(text, &original, transformed) {
+        doc.set_selection(view.id, selection);
     } else {
         collapse_selection(cx);
         keep_primary_selection(cx);
@@ -1321,10 +1321,15 @@ fn goto_file_start_impl(cx: &mut Context, movement: Movement) {
         goto_line_impl(cx, movement);
     } else {
         let (view, doc) = current!(cx.editor);
+        let shape = if cx.editor.mode == Mode::Insert {
+            DestinationMotion::Relocation
+        } else {
+            DestinationMotion::LinearSelecting
+        };
         let selection = doc
             .selection(view.id)
             .clone()
-            .transform(|range| DestinationMotion::LinearSelecting.apply(range, 0, movement));
+            .transform(|range| shape.apply(range, 0, movement));
         push_jump(view, doc);
         doc.set_selection(view.id, selection);
     }
@@ -1341,10 +1346,15 @@ fn extend_to_file_end(cx: &mut Context) {
 fn goto_file_end_impl(cx: &mut Context, movement: Movement) {
     let (view, doc) = current!(cx.editor);
     let pos = doc.text().len_chars();
+    let shape = if cx.editor.mode == Mode::Insert {
+        DestinationMotion::Relocation
+    } else {
+        DestinationMotion::LinearSelecting
+    };
     let selection = doc
         .selection(view.id)
         .clone()
-        .transform(|range| DestinationMotion::LinearSelecting.apply(range, pos, movement));
+        .transform(|range| shape.apply(range, pos, movement));
     push_jump(view, doc);
     doc.set_selection(view.id, selection);
 }
@@ -1860,7 +1870,7 @@ fn replace(cx: &mut Context) {
 
         if let Some(ch) = ch {
             let transaction = Transaction::change_by_selection(doc.text(), selection, |range| {
-                if !range.is_empty() {
+                if let Some(range) = effective_char_range(doc.text().slice(..), *range) {
                     let text: Tendril = doc
                         .text()
                         .slice(range.from()..range.to())
@@ -1869,8 +1879,7 @@ fn replace(cx: &mut Context) {
                         .collect();
                     (range.from(), range.to(), Some(text))
                 } else {
-                    // No change.
-                    (range.from(), range.to(), None)
+                    (range.head, range.head, None)
                 }
             });
 
@@ -1887,6 +1896,9 @@ where
     let (view, doc) = current!(cx.editor);
     let selection = doc.selection(view.id);
     let transaction = Transaction::change_by_selection(doc.text(), selection, |range| {
+        let Some(range) = effective_char_range(doc.text().slice(..), *range) else {
+            return (range.head, range.head, None);
+        };
         let text: Tendril = change_fn(range.slice(doc.text().slice(..)));
 
         (range.from(), range.to(), Some(text))
@@ -2226,9 +2238,12 @@ fn select_regex(cx: &mut Context) {
                 return;
             }
             let text = doc.text().slice(..);
-            if let Some(selection) =
-                selection::select_on_matches(text, doc.selection(view.id), &regex)
-            {
+            let original = doc.selection(view.id).clone();
+            let Some(operands) = effective_char_selection(text, &original) else {
+                return;
+            };
+            let transformed = selection::select_on_matches(text, &operands, &regex);
+            if let Some(selection) = restore_no_operand_ranges(text, &original, transformed) {
                 doc.set_selection(view.id, selection);
             } else if event == PromptEvent::Validate {
                 cx.editor.set_error("nothing selected");
@@ -2250,8 +2265,14 @@ fn split_selection(cx: &mut Context) {
                 return;
             }
             let text = doc.text().slice(..);
-            let selection = selection::split_on_matches(text, doc.selection(view.id), &regex);
-            doc.set_selection(view.id, selection);
+            let original = doc.selection(view.id).clone();
+            let Some(operands) = effective_char_selection(text, &original) else {
+                return;
+            };
+            let transformed = selection::split_on_matches(text, &operands, &regex);
+            if let Some(selection) = restore_no_operand_ranges(text, &original, Some(transformed)) {
+                doc.set_selection(view.id, selection);
+            }
         },
     );
 }
@@ -2259,8 +2280,14 @@ fn split_selection(cx: &mut Context) {
 fn split_selection_on_newline(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
-    let selection = selection::split_on_newline(text, doc.selection(view.id));
-    doc.set_selection(view.id, selection);
+    let original = doc.selection(view.id).clone();
+    let Some(operands) = effective_char_selection(text, &original) else {
+        return;
+    };
+    let transformed = selection::split_on_newline(text, &operands);
+    if let Some(selection) = restore_no_operand_ranges(text, &original, Some(transformed)) {
+        doc.set_selection(view.id, selection);
+    }
 }
 
 fn merge_selections(cx: &mut Context) {
@@ -2529,9 +2556,11 @@ fn search_selection_impl(cx: &mut Context, detect_word_boundaries: bool) {
     let register = cx.register.unwrap_or('/');
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
+    let Some(operands) = effective_char_selection(text, doc.selection(view.id)) else {
+        return;
+    };
 
-    let regex = doc
-        .selection(view.id)
+    let regex = operands
         .iter()
         .map(|selection| {
             let add_boundary_prefix =
@@ -3014,6 +3043,84 @@ fn selection_is_linewise(selection: &Selection, text: &Rope) -> bool {
     })
 }
 
+/// Resolves the character-oriented operand for a stored edge range.
+///
+/// Nonempty ranges retain their exact bounds and direction. A point expands
+/// over the grapheme to its right, while a point at EOF has no operand.
+fn effective_char_range(text: RopeSlice, range: Range) -> Option<Range> {
+    if !range.is_empty() {
+        return Some(range);
+    }
+    if range.head == text.len_chars() {
+        return None;
+    }
+
+    Some(Range::new(
+        range.head,
+        next_grapheme_boundary(text, range.head),
+    ))
+}
+
+fn effective_char_selection(text: RopeSlice, selection: &Selection) -> Option<Selection> {
+    let old_primary = selection.primary_index();
+    let mut primary = None;
+    let mut ranges = SmallVec::new();
+    for (i, range) in selection.iter().enumerate() {
+        let Some(range) = effective_char_range(text, *range) else {
+            continue;
+        };
+        if primary.is_none() && old_primary <= i {
+            primary = Some(ranges.len());
+        }
+        ranges.push(range);
+    }
+    if ranges.is_empty() {
+        return None;
+    }
+
+    let primary = primary.unwrap_or_else(|| ranges.len() - 1);
+    Some(Selection::new(ranges, primary))
+}
+
+fn active_stored_selection(text: RopeSlice, selection: &Selection) -> Option<Selection> {
+    let effective = effective_char_selection(text, selection)?;
+    let ranges = selection
+        .iter()
+        .filter(|range| effective_char_range(text, **range).is_some())
+        .copied()
+        .collect();
+
+    Some(Selection::new(ranges, effective.primary_index()))
+}
+
+fn restore_no_operand_ranges(
+    text: RopeSlice,
+    original: &Selection,
+    transformed: Option<Selection>,
+) -> Option<Selection> {
+    let transformed_primary = transformed.as_ref().map(Selection::primary_index);
+    let mut ranges: SmallVec<[Range; 1]> = transformed
+        .as_ref()
+        .map(|selection| selection.ranges().iter().copied().collect())
+        .unwrap_or_default();
+    let mut primary = transformed_primary;
+
+    for (i, range) in original.iter().enumerate() {
+        if effective_char_range(text, *range).is_some() {
+            continue;
+        }
+        if i == original.primary_index() {
+            primary = Some(ranges.len());
+        }
+        ranges.push(*range);
+    }
+    if ranges.is_empty() {
+        return None;
+    }
+
+    Some(Selection::new(ranges, primary.unwrap_or(0)))
+}
+
 enum YankAction {
     Yank,
     NoYank,
@@ -3024,24 +3131,19 @@ fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
     let text = doc.text().slice(..);
 
     let selection = doc.selection(view.id);
-    let only_whole_lines = selection_is_linewise(selection, doc.text());
+    let Some(operands) = effective_char_selection(text, selection) else {
+        return;
+    };
+    let only_whole_lines = selection_is_linewise(&operands, doc.text());
 
     if cx.register != Some('_') && matches!(yank, YankAction::Yank) {
-        // yank the selection (or the character after cursor for empty selections)
-        let values: Vec<String> = selection
+        let values: Vec<Option<String>> = selection
             .iter()
             .map(|range| {
-                let (from, to) = if range.from() == range.to() {
-                    // Empty selection: yank character after cursor
-                    let start = range.from();
-                    let end = next_grapheme_boundary(text, start);
-                    (start, end)
-                } else {
-                    (range.from(), range.to())
-                };
-                text.slice(from..to).to_string()
+                effective_char_range(text, *range).map(|range| range.fragment(text).to_string())
             })
             .collect();
+        let values = values.into_iter().map(Option::unwrap_or_default).collect();
         let reg_name = cx
             .register
             .unwrap_or_else(|| cx.editor.config.load().default_yank_register);
@@ -3051,17 +3153,16 @@ fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
         }
     }
 
-    // delete the selection (or character after cursor for empty selections)
-    let transaction = Transaction::delete_by_selection(doc.text(), selection, |range| {
-        if range.from() == range.to() {
-            // Empty selection: delete character after cursor
-            let start = range.from();
-            let end = next_grapheme_boundary(text, start);
-            (start, end)
-        } else {
-            (range.from(), range.to())
-        }
-    });
+    let mut transaction = Transaction::delete(
+        doc.text(),
+        operands.iter().map(|range| (range.from(), range.to())),
+    );
+    let post_source = match op {
+        Operation::Delete => selection.clone(),
+        Operation::Change => active_stored_selection(text, selection).unwrap(),
+    };
+    let post_selection = post_source.map_no_normalize(transaction.changes());
+    transaction = transaction.with_selection(post_selection);
     doc.apply(&transaction, view.id);
 
     match op {
@@ -3083,44 +3184,13 @@ fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
 fn delete_by_selection_insert_mode(
     cx: &mut Context,
     mut f: impl FnMut(RopeSlice, &Range) -> Deletion,
-    direction: Direction,
 ) {
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
-    let mut selection = SmallVec::new();
-    let mut insert_newline = false;
-    let text_len = text.len_chars();
-    let mut transaction =
+    let transaction =
         Transaction::delete_by_selection(doc.text(), doc.selection(view.id), |range| {
-            let (start, end) = f(text, range);
-            if direction == Direction::Forward {
-                let mut range = *range;
-                if range.head > range.anchor {
-                    insert_newline |= end == text_len;
-                    // move the cursor to the right so that the selection
-                    // doesn't shrink when deleting forward (so the text appears to
-                    // move to  left)
-                    // += 1 is enough here as the range is normalized to grapheme boundaries
-                    // later anyway
-                    range.head += 1;
-                }
-                selection.push(range);
-            }
-            (start, end)
+            f(text, range)
         });
-
-    // in case we delete the last character and the cursor would be moved to the EOF char
-    // insert a newline, just like when entering append mode
-    if insert_newline {
-        transaction = transaction.insert_at_eof(doc.line_ending.as_str().into());
-    }
-
-    if direction == Direction::Forward {
-        doc.set_selection(
-            view.id,
-            Selection::new(selection, doc.selection(view.id).primary_index()),
-        );
-    }
     doc.apply(&transaction, view.id);
 }
 
@@ -3196,11 +3266,9 @@ fn insert_mode(cx: &mut Context) {
     doc.set_selection(view.id, selection);
 }
 
-// inserts at the cursor position, keeping the selection
+// inserts at the cursor position, collapsing the selection
 fn append_mode(cx: &mut Context) {
-    enter_insert_mode(cx);
-    // With edge-based selections, just enter insert mode at the cursor (head)
-    // without modifying the selection
+    insert_mode(cx);
 }
 
 fn file_picker(cx: &mut Context) {
@@ -3738,7 +3806,6 @@ fn insert_at_line_end(cx: &mut Context) {
 // Enter insert mode and auto-indent the current line if it is empty.
 // If the line is not empty, move the cursor to the specified fallback position.
 fn insert_with_indent(cx: &mut Context, cursor_fallback: IndentFallbackPos) {
-    let was_select_mode = cx.editor.mode == Mode::Select;
     enter_insert_mode(cx);
 
     let (view, doc) = current!(cx.editor);
@@ -3792,7 +3859,7 @@ fn insert_with_indent(cx: &mut Context, cursor_fallback: IndentFallbackPos) {
                 IndentFallbackPos::LineEnd => line_end_char_index(&text, cursor_line),
             };
 
-            ranges.push(range.put_cursor(text, pos + offs, was_select_mode));
+            ranges.push(Range::point(pos + offs));
 
             (cursor_line_start, cursor_line_start, None)
         }
@@ -4158,16 +4225,6 @@ fn goto_last_modified_file(cx: &mut Context) {
 }
 
 fn select_mode(cx: &mut Context) {
-    let (view, doc) = current!(cx.editor);
-    let text = doc.text().slice(..);
-
-    // Collapse selection to cursor when entering select mode
-    let selection = doc.selection(view.id).clone().transform(|range| {
-        let pos = range.cursor(text);
-        Range::new(pos, pos)
-    });
-    doc.set_selection(view.id, selection);
-
     cx.editor.mode = Mode::Select;
 }
 
@@ -4461,6 +4518,7 @@ pub mod insert {
                     goto_next_tabstop(cx);
                 } else {
                     move_parent_node_end(cx);
+                    collapse_selection(cx);
                 }
                 return;
             }
@@ -4663,24 +4721,8 @@ pub mod insert {
                 (line_start, line_start, new_text.chars().count() as isize)
             };
 
-            let new_range = if range.cursor(text) > range.anchor {
-                // when appending, extend the range by local_offs
-                Range::new(
-                    (range.anchor as isize + global_offs) as usize,
-                    (range.head as isize + local_offs + global_offs) as usize,
-                )
-            } else {
-                // when inserting, slide the range by local_offs
-                Range::new(
-                    (range.anchor as isize + local_offs + global_offs) as usize,
-                    (range.head as isize + local_offs + global_offs) as usize,
-                )
-            };
-
-            // TODO: range replace or extend
-            // range.replace(|range| range.is_empty(), head); -> fn extend if cond true, new head pos
-            // can be used with cx.mode to do replace or extend on most changes
-            ranges.push(new_range);
+            let new_pos = (pos as isize + local_offs + global_offs) as usize;
+            ranges.push(Range::point(new_pos));
             global_offs += new_text.chars().count() as isize - chars_deleted as isize;
             let tendril = Tendril::from(&new_text);
             new_text.clear();
@@ -4794,40 +4836,28 @@ pub mod insert {
 
     pub fn delete_char_forward(cx: &mut Context) {
         let count = cx.count();
-        delete_by_selection_insert_mode(
-            cx,
-            |text, range| {
-                let pos = range.cursor(text);
-                (pos, graphemes::nth_next_grapheme_boundary(text, pos, count))
-            },
-            Direction::Forward,
-        )
+        delete_by_selection_insert_mode(cx, |text, range| {
+            let pos = range.cursor(text);
+            (pos, graphemes::nth_next_grapheme_boundary(text, pos, count))
+        })
     }
 
     pub fn delete_word_backward(cx: &mut Context) {
         let count = cx.count();
-        delete_by_selection_insert_mode(
-            cx,
-            |text, range| {
-                let anchor = movement::move_prev_word_start(text, *range, count).from();
-                let next = Range::new(anchor, range.cursor(text));
-                let range = exclude_cursor(text, next, *range);
-                (range.from(), range.to())
-            },
-            Direction::Backward,
-        );
+        delete_by_selection_insert_mode(cx, |text, range| {
+            let anchor = movement::move_prev_word_start(text, *range, count).from();
+            let next = Range::new(anchor, range.cursor(text));
+            let range = exclude_cursor(text, next, *range);
+            (range.from(), range.to())
+        });
     }
 
     pub fn delete_word_forward(cx: &mut Context) {
         let count = cx.count();
-        delete_by_selection_insert_mode(
-            cx,
-            |text, range| {
-                let head = movement::move_next_word_end(text, *range, count).to();
-                (range.cursor(text), head)
-            },
-            Direction::Forward,
-        );
+        delete_by_selection_insert_mode(cx, |text, range| {
+            let head = movement::move_next_word_end(text, *range, count).to();
+            (range.cursor(text), head)
+        });
     }
 }
 
@@ -4909,11 +4939,17 @@ fn yank_impl(editor: &mut Editor, register: char) {
     let (view, doc) = current!(editor);
     let text = doc.text().slice(..);
 
-    let values: Vec<String> = doc
+    let values: Vec<Option<String>> = doc
         .selection(view.id)
-        .fragments(text)
-        .map(Cow::into_owned)
+        .iter()
+        .map(|range| {
+            effective_char_range(text, *range).map(|range| range.fragment(text).into_owned())
+        })
         .collect();
+    if values.iter().all(Option::is_none) {
+        return;
+    }
+    let values: Vec<_> = values.into_iter().map(Option::unwrap_or_default).collect();
     let selections = values.len();
 
     match editor.registers.write(register, values) {
@@ -4930,9 +4966,17 @@ fn yank_joined_impl(editor: &mut Editor, separator: &str, register: char) {
     let text = doc.text().slice(..);
 
     let selection = doc.selection(view.id);
-    let selections = selection.len();
-    let joined = selection
-        .fragments(text)
+    let fragments: Vec<_> = selection
+        .iter()
+        .filter_map(|range| effective_char_range(text, *range))
+        .map(|range| range.fragment(text))
+        .collect();
+    let selections = fragments.len();
+    if fragments.is_empty() {
+        return;
+    }
+    let joined = fragments
+        .into_iter()
         .fold(String::new(), |mut acc, fragment| {
             if !acc.is_empty() {
                 acc.push_str(separator);
@@ -4977,7 +5021,10 @@ pub(crate) fn yank_main_selection_to_register(editor: &mut Editor, register: cha
     let (view, doc) = current!(editor);
     let text = doc.text().slice(..);
 
-    let selection = doc.selection(view.id).primary().fragment(text).to_string();
+    let Some(range) = effective_char_range(text, doc.selection(view.id).primary()) else {
+        return;
+    };
+    let selection = range.fragment(text).to_string();
 
     match editor.registers.write(register, vec![selection]) {
         Ok(_) => editor.set_status(format!("yanked primary selection to register {register}",)),
@@ -4995,23 +5042,9 @@ fn yank_main_selection_to_primary_clipboard(cx: &mut Context) {
     exit_select_mode(cx);
 }
 
-#[derive(Copy, Clone)]
-pub(crate) enum Paste {
-    Before,
-    After,
-    Cursor,
-}
-
 static LINE_ENDING_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\r\n|\r|\n").unwrap());
 
-fn paste_impl(
-    values: &[String],
-    doc: &mut Document,
-    view: &mut View,
-    action: Paste,
-    count: usize,
-    mode: Mode,
-) {
+fn paste_impl(values: &[String], doc: &mut Document, view: &mut View, count: usize, mode: Mode) {
     if values.is_empty() {
         return;
     }
@@ -5048,20 +5081,11 @@ fn paste_impl(
     let mut ranges = SmallVec::with_capacity(selection.len());
 
     let mut transaction = Transaction::change_by_selection(text, selection, |range| {
-        let pos = match (action, linewise) {
-            // paste linewise before
-            (Paste::Before, true) => text.line_to_char(text.char_to_line(range.from())),
-            // paste linewise after
-            (Paste::After, true) => {
-                let line = range.line_range(text.slice(..)).1;
-                text.line_to_char((line + 1).min(text.len_lines()))
-            }
-            // paste insert
-            (Paste::Before, false) => range.from(),
-            // paste append
-            (Paste::After, false) => range.to(),
-            // paste at cursor
-            (Paste::Cursor, _) => range.cursor(text.slice(..)),
+        let head = range.cursor(text.slice(..));
+        let pos = if linewise {
+            text.line_to_char(text.char_to_line(head))
+        } else {
+            head
         };
 
         let value = values.next();
@@ -5079,7 +5103,7 @@ fn paste_impl(
         (pos, pos, value)
     });
 
-    if mode == Mode::Normal {
+    if mode != Mode::Insert {
         transaction = transaction.with_selection(Selection::new(ranges, selection.primary_index()));
     }
 
@@ -5089,32 +5113,28 @@ fn paste_impl(
 
 pub(crate) fn paste_bracketed_value(cx: &mut Context, contents: String) {
     let count = cx.count();
-    let paste = match cx.editor.mode {
-        Mode::Insert | Mode::Select => Paste::Cursor,
-        Mode::Normal => Paste::Before,
-    };
     let (view, doc) = current!(cx.editor);
-    paste_impl(&[contents], doc, view, paste, count, cx.editor.mode);
+    paste_impl(&[contents], doc, view, count, cx.editor.mode);
     exit_select_mode(cx);
 }
 
 fn paste_clipboard_after(cx: &mut Context) {
-    paste(cx.editor, '+', Paste::Cursor, cx.count());
+    paste(cx.editor, '+', cx.count());
     exit_select_mode(cx);
 }
 
 fn paste_clipboard_before(cx: &mut Context) {
-    paste(cx.editor, '+', Paste::Cursor, cx.count());
+    paste(cx.editor, '+', cx.count());
     exit_select_mode(cx);
 }
 
 fn paste_primary_clipboard_after(cx: &mut Context) {
-    paste(cx.editor, '*', Paste::Cursor, cx.count());
+    paste(cx.editor, '*', cx.count());
     exit_select_mode(cx);
 }
 
 fn paste_primary_clipboard_before(cx: &mut Context) {
-    paste(cx.editor, '*', Paste::Cursor, cx.count());
+    paste(cx.editor, '*', cx.count());
     exit_select_mode(cx);
 }
 
@@ -5157,10 +5177,10 @@ pub(crate) fn replace_selections_with_register(editor: &mut Editor, register: ch
         .chain(repeat);
     let selection = doc.selection(view.id);
     let transaction = Transaction::change_by_selection(doc.text(), selection, |range| {
-        if !range.is_empty() {
+        if let Some(range) = effective_char_range(doc.text().slice(..), *range) {
             (range.from(), range.to(), Some(values.next().unwrap()))
         } else {
-            (range.from(), range.to(), None)
+            (range.head, range.head, None)
         }
     });
     drop(values);
@@ -5181,14 +5201,14 @@ fn replace_selections_with_primary_clipboard(cx: &mut Context) {
     exit_select_mode(cx);
 }
 
-pub(crate) fn paste(editor: &mut Editor, register: char, pos: Paste, count: usize) {
+pub(crate) fn paste(editor: &mut Editor, register: char, count: usize) {
     let Some(values) = editor.registers.read(register, editor) else {
         return;
     };
     let values: Vec<_> = values.map(|value| value.to_string()).collect();
 
     let (view, doc) = current!(editor);
-    paste_impl(&values, doc, view, pos, count, editor.mode);
+    paste_impl(&values, doc, view, count, editor.mode);
 }
 
 fn paste_after(cx: &mut Context) {
@@ -5196,7 +5216,6 @@ fn paste_after(cx: &mut Context) {
         cx.editor,
         cx.register
             .unwrap_or(cx.editor.config().default_yank_register),
-        Paste::Cursor,
         cx.count(),
     );
     exit_select_mode(cx);
@@ -5207,7 +5226,6 @@ fn paste_before(cx: &mut Context) {
         cx.editor,
         cx.register
             .unwrap_or(cx.editor.config().default_yank_register),
-        Paste::Cursor,
         cx.count(),
     );
     exit_select_mode(cx);
@@ -5333,10 +5351,22 @@ fn format_selections(cx: &mut Context) {
     };
 
     let offset_encoding = language_server.offset_encoding();
+    let text = doc.text().slice(..);
     let ranges: Vec<lsp::Range> = doc
         .selection(view_id)
         .iter()
-        .map(|range| range_to_lsp_range(doc.text(), *range, offset_encoding))
+        .map(|range| {
+            let range = if range.is_empty() {
+                let line = text.char_to_line(range.head);
+                Range::new(
+                    text.line_to_char(line),
+                    text.line_to_char((line + 1).min(text.len_lines())),
+                )
+            } else {
+                *range
+            };
+            range_to_lsp_range(doc.text(), range, offset_encoding)
+        })
         .collect();
 
     // TODO: handle fails
@@ -5499,10 +5529,13 @@ fn keep_or_remove_selections_impl(cx: &mut Context, remove: bool) {
                 return;
             }
             let text = doc.text().slice(..);
+            let original = doc.selection(view.id).clone();
+            let Some(operands) = effective_char_selection(text, &original) else {
+                return;
+            };
 
-            if let Some(selection) =
-                selection::keep_or_remove_matches(text, doc.selection(view.id), &regex, remove)
-            {
+            let transformed = selection::keep_or_remove_matches(text, &operands, &regex, remove);
+            if let Some(selection) = restore_no_operand_ranges(text, &original, transformed) {
                 doc.set_selection(view.id, selection);
             } else if event == PromptEvent::Validate {
                 cx.editor.set_error("no selections remaining");
@@ -5762,24 +5795,34 @@ fn reorder_selection_contents(cx: &mut Context, strategy: ReorderStrategy) {
     let text = doc.text().slice(..);
 
     let selection = doc.selection(view.id);
-
-    let mut ranges: Vec<_> = selection
-        .slices(text)
-        .map(|fragment| fragment.chunks().collect())
+    let effective_ranges: Vec<_> = selection
+        .iter()
+        .enumerate()
+        .filter_map(|(index, range)| effective_char_range(text, *range).map(|range| (index, range)))
+        .collect();
+    if effective_ranges.is_empty() {
+        return;
+    }
+    let mut ranges: Vec<_> = effective_ranges
+        .iter()
+        .map(|(_, range)| Tendril::from(range.fragment(text).as_ref()))
         .collect();
 
     let rotate_by = count.map_or(1, |count| count.get().min(ranges.len()));
+    let active_primary = effective_ranges
+        .iter()
+        .position(|(index, _)| *index == selection.primary_index());
 
     let primary_index = match strategy {
         ReorderStrategy::RotateForward => {
             ranges.rotate_right(rotate_by);
-            // Like `usize::wrapping_add`, but provide a custom range from `0` to `ranges.len()`
-            (selection.primary_index() + ranges.len() + rotate_by) % ranges.len()
+            active_primary
+                .map(|primary_index| (primary_index + ranges.len() + rotate_by) % ranges.len())
         }
         ReorderStrategy::RotateBackward => {
             ranges.rotate_left(rotate_by);
-            // Like `usize::wrapping_sub`, but provide a custom range from `0` to `ranges.len()`
-            (selection.primary_index() + ranges.len() - rotate_by) % ranges.len()
+            active_primary
+                .map(|primary_index| (primary_index + ranges.len() - rotate_by) % ranges.len())
         }
         ReorderStrategy::Reverse => {
             if rotate_by.is_multiple_of(2) {
@@ -5788,24 +5831,25 @@ fn reorder_selection_contents(cx: &mut Context, strategy: ReorderStrategy) {
                 return;
             }
             ranges.reverse();
-            // -1 to turn 1-based len into 0-based index
-            (ranges.len() - 1) - selection.primary_index()
+            active_primary.map(|primary_index| (ranges.len() - 1) - primary_index)
         }
     };
 
     let transaction = Transaction::change(
         doc.text(),
-        selection
-            .ranges()
+        effective_ranges
             .iter()
             .zip(ranges)
-            .map(|(range, fragment)| (range.from(), range.to(), Some(fragment))),
+            .map(|((_, range), fragment)| (range.from(), range.to(), Some(fragment))),
     );
 
-    doc.set_selection(
-        view.id,
-        Selection::new(selection.ranges().into(), primary_index),
-    );
+    let mut result = selection
+        .clone()
+        .transform(|range| effective_char_range(text, range).unwrap_or(range));
+    if let Some(primary_index) = primary_index {
+        result.set_primary_index(effective_ranges[primary_index].0);
+    }
+    doc.set_selection(view.id, result);
     doc.apply(&transaction, view.id);
 }
 
@@ -6155,7 +6199,6 @@ fn insert_register(cx: &mut Context) {
                 cx.editor,
                 cx.register
                     .unwrap_or(cx.editor.config().default_yank_register),
-                Paste::Cursor,
                 count,
             );
         }
@@ -6650,12 +6693,19 @@ fn shell_keep_pipe(cx: &mut Context) {
         let text = doc.text().slice(..);
 
         for (i, range) in selection.ranges().iter().enumerate() {
+            let Some(range) = effective_char_range(text, *range) else {
+                ranges.push(*range);
+                if old_index <= i && index.is_none() {
+                    index = Some(ranges.len() - 1);
+                }
+                continue;
+            };
             let fragment = range.slice(text);
             if let Err(err) = shell_impl(shell, args.join(" ").as_str(), Some(fragment.into())) {
                 log::debug!("Shell command failed: {}", err);
             } else {
-                ranges.push(*range);
-                if i >= old_index && index.is_none() {
+                ranges.push(range);
+                if old_index <= i && index.is_none() {
                     index = Some(ranges.len() - 1);
                 }
             }
@@ -6760,6 +6810,19 @@ fn shell(cx: &mut compositor::Context, cmd: &str, behavior: &ShellBehavior) {
     let mut shell_output: Option<Tendril> = None;
     let mut offset = 0isize;
     for range in selection.ranges() {
+        let effective_range = match behavior {
+            ShellBehavior::Replace | ShellBehavior::Ignore => effective_char_range(text, *range),
+            ShellBehavior::Insert | ShellBehavior::Append => Some(*range),
+        };
+        let Some(range) = effective_range else {
+            ranges.push(Range::point(
+                range
+                    .head
+                    .checked_add_signed(offset)
+                    .expect("Selection ranges cannot overlap"),
+            ));
+            continue;
+        };
         let output = if let Some(output) = shell_output.as_ref() {
             output.clone()
         } else {
@@ -6936,8 +6999,15 @@ fn increment_impl(cx: &mut Context, increment_direction: IncrementDirection) {
     let mut changes = vec![];
 
     for range in selection {
-        let selected_text: Cow<str> = range.fragment(text);
-        let new_from = ((range.from() as i128) + cumulative_length_diff) as usize;
+        let Some(effective_range) = effective_char_range(text, *range) else {
+            new_selection_ranges.push(Range::point(
+                (range.head as i128 + cumulative_length_diff) as usize,
+            ));
+            amount += increase_by;
+            continue;
+        };
+        let selected_text: Cow<str> = effective_range.fragment(text);
+        let new_from = ((effective_range.from() as i128) + cumulative_length_diff) as usize;
         let incremented = [increment::integer, increment::date_time]
             .iter()
             .find_map(|incrementor| incrementor(selected_text.as_ref(), amount));
@@ -6948,7 +7018,7 @@ fn increment_impl(cx: &mut Context, increment_direction: IncrementDirection) {
             None => {
                 let new_range = Range::new(
                     new_from,
-                    (range.to() as i128 + cumulative_length_diff) as usize,
+                    (effective_range.to() as i128 + cumulative_length_diff) as usize,
                 );
                 new_selection_ranges.push(new_range);
             }
@@ -6956,7 +7026,11 @@ fn increment_impl(cx: &mut Context, increment_direction: IncrementDirection) {
                 let new_range = Range::new(new_from, new_from + new_text.len());
                 cumulative_length_diff += new_text.len() as i128 - selected_text.len() as i128;
                 new_selection_ranges.push(new_range);
-                changes.push((range.from(), range.to(), Some(new_text.into())));
+                changes.push((
+                    effective_range.from(),
+                    effective_range.to(),
+                    Some(new_text.into()),
+                ));
             }
         }
     }

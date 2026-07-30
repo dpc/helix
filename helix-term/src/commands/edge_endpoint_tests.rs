@@ -93,3 +93,39 @@ fn directional_command_targets_apply_mode_and_travel_head() {
         Range::new(2, 10)
     );
 }
+
+#[test]
+fn effective_character_operands_cover_points_graphemes_and_eof() {
+    let text = Rope::from("a\u{301}\r\nx");
+    let text = text.slice(..);
+
+    assert_eq!(
+        effective_char_range(text, Range::point(0)),
+        Some(Range::new(0, 2))
+    );
+    assert_eq!(
+        effective_char_range(text, Range::point(2)),
+        Some(Range::new(2, 4))
+    );
+    assert_eq!(
+        effective_char_range(text, Range::new(5, 4)),
+        Some(Range::new(5, 4))
+    );
+    assert_eq!(effective_char_range(text, Range::point(5)), None);
+}
+
+#[test]
+fn transformed_character_selection_restores_eof_primary() {
+    let text = Rope::from("ab");
+    let text = text.slice(..);
+    let selection = Selection::new(smallvec::smallvec![Range::point(0), Range::point(2)], 1);
+
+    let transformed = effective_char_selection(text, &selection);
+    assert_eq!(
+        restore_no_operand_ranges(text, &selection, transformed),
+        Some(Selection::new(
+            smallvec::smallvec![Range::new(0, 1), Range::point(2)],
+            1,
+        ))
+    );
+}

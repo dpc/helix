@@ -111,8 +111,8 @@ Alternatively, Helix can be configured to use arbitrary commands for clipboard i
 [editor.clipboard-provider.custom]
 yank = { command = "cat",  args = ["test.txt"] }
 paste = { command = "tee",  args = ["test.txt"] }
-primary-yank = { command = "cat",  args = ["test-primary.txt"] } # optional
-primary-paste = { command = "tee",  args = ["test-primary.txt"] } # optional
+yank-primary = { command = "cat",  args = ["test-primary.txt"] } # optional
+paste-primary = { command = "tee",  args = ["test-primary.txt"] } # optional
 ```
 
 For custom commands the contents of the yank/paste is communicated over stdin/stdout.

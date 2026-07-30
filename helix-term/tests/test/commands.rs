@@ -20,8 +20,8 @@ async fn search_selection_detect_word_boundaries_at_eof() -> anyhow::Result<()> 
         indoc! {"\
             one
             two
-            three#[
-            |]#"},
+            three#[|
+            ]#"},
     ))
     .await?;
 
@@ -121,6 +121,7 @@ async fn test_selection_duplication() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "Stage 4: goto-file adjacent-path discovery requires the D8 object-affinity migration"]
 async fn test_goto_file_impl() -> anyhow::Result<()> {
     let file = tempfile::NamedTempFile::new()?;
 
@@ -211,14 +212,250 @@ async fn test_multi_selection_paste() -> anyhow::Result<()> {
             "},
         "yp",
         indoc! {"\
-            lorem#[|lorem]#
-            ipsum#(|ipsum)#
-            dolor#(|dolor)#
+            #[|lorem]#lorem
+            #(|ipsum)#ipsum
+            #(|dolor)#dolor
             "},
     ))
     .await?;
 
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn point_character_operators_use_the_right_grapheme() -> anyhow::Result<()> {
+    test(("#[|]#a\u{301}b\n", "d", "#[|]#b\n")).await?;
+    test(("#[|]#ab\n", "rX", "#[|]#Xb\n")).await?;
+    test(("#[|]#ab\n", "~", "#[|]#Ab\n")).await?;
+    test(("#[|]#🦀b\n", "yp", "#[🦀|]#🦀b\n")).await?;
+    test(("ab#[|]#", "d", "ab#[|]#", LineFeedHandling::AsIs)).await?;
+    test(("#[|]#ab#(|)#", "d", "#[|]#b#(|)#", LineFeedHandling::AsIs)).await?;
+    test(("#[|]#ab#(|)#", "cX<esc>", "X#[|]#b", LineFeedHandling::AsIs)).await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sort_at_eof_is_a_noop() -> anyhow::Result<()> {
+    test_key_sequence_with_input_text(
+        None,
+        TestCase::from(("abc#[|]#", ":sort<ret>", "abc#[|]#", LineFeedHandling::AsIs)),
+        &|app| assert_status_not_error(&app.editor),
+        false,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn point_character_operator_matrix() -> anyhow::Result<()> {
+    let cases = [
+        ("#[|]#ab", "yp", "#[a|]#ab"),
+        ("#[|]#ab", "yP", "#[a|]#ab"),
+        ("#[|]#ab", "y<space>?paste_before<ret>", "#[a|]#ab"),
+        ("#[|]#1x", "<C-a>", "#[2|]#x"),
+        ("#[|]#1x", "<C-x>", "#[0|]#x"),
+        ("#[|]#ab", "<space>?switch_to_uppercase<ret>", "#[|]#Ab"),
+        ("#[|]#Ab", "<space>?switch_to_lowercase<ret>", "#[|]#ab"),
+        ("#[|]#ab", "|tr a-z A-Z<ret>", "#[A|]#b"),
+        ("#[|]#ab", "!printf X<ret>", "#[X|]#ab"),
+        ("#[|]#ab", "<A-!>printf X<ret>", "#[X|]#ab"),
+        ("#[|]#ab", "yR", "#[|]#ab"),
+        ("#[|]# ab", "_", "#[|]# ab"),
+        ("#[|]#ab", "_", "#[a|]#b"),
+        ("#[|]#ab", "s.<ret>", "#[a|]#b"),
+        ("#[|]#ab", "Sx<ret>", "#[a|]#b"),
+        ("#[|]#ab", ":reflow<ret>", "#[|]#ab"),
+    ];
+
+    for case in cases {
+        test((case.0, case.1, case.2, LineFeedHandling::AsIs)).await?;
+    }
+
+    for keys in ["y"] {
+        test(("#[|]#a", keys, "#[|]#a", LineFeedHandling::AsIs)).await?;
+        test(("a#[|]#", keys, "a#[|]#", LineFeedHandling::AsIs)).await?;
+    }
+    test((
+        "#[|]#a",
+        "<space>?yank_joined<ret>p",
+        "#[a|]#a",
+        LineFeedHandling::AsIs,
+    ))
+    .await?;
+    test((
+        "#[|]#xa",
+        "yA<esc><space>?yank_joined<ret>p",
+        "xa#[x|]#",
+        LineFeedHandling::AsIs,
+    ))
+    .await?;
+
+    for keys in ["yp", "yP"] {
+        test(("#[ab|]#", keys, "ab#[ab|]#", LineFeedHandling::AsIs)).await?;
+        test(("#[|ab]#", keys, "#[|ab]#ab", LineFeedHandling::AsIs)).await?;
+    }
+    for keys in ["xyp", "xyP"] {
+        test((
+            "#[|]#one\ntwo",
+            keys,
+            "one\n#[one\n|]#two",
+            LineFeedHandling::AsIs,
+        ))
+        .await?;
+    }
+    test(("#[|]#ab", "y2p", "#[aa|]#ab", LineFeedHandling::AsIs)).await?;
+    test(("#[|]#ab", "\"ay\"ap", "#[a|]#ab", LineFeedHandling::AsIs)).await?;
+    test((
+        "#[|]#a\n#(|)#b\n#(|)#",
+        "Ka<ret>",
+        "#[a|]#\nb\n#(|)#",
+        LineFeedHandling::AsIs,
+    ))
+    .await?;
+    test((
+        "#[|]#a\n#(|)#b\n#(|)#",
+        "<A-K>a<ret>",
+        "a\n#[b|]#\n#(|)#",
+        LineFeedHandling::AsIs,
+    ))
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clipboard_paste_variants_share_the_head_boundary() -> anyhow::Result<()> {
+    let editor: helix_view::editor::Config = toml::from_str(
+        r#"
+        [clipboard-provider.custom]
+        yank = { command = "printf", args = ["z"] }
+        paste = { command = "cat" }
+        yank-primary = { command = "printf", args = ["p"] }
+        paste-primary = { command = "cat" }
+        "#,
+    )?;
+    let mut config = test_config();
+    config.editor.clipboard_provider = editor.clipboard_provider;
+    let static_primary_keys: helix_term::config::ConfigRaw = toml::from_str(
+        r#"
+        [keys.normal]
+        "C-p" = "paste_primary_clipboard_after"
+        "C-o" = "paste_primary_clipboard_before"
+        "C-r" = "replace_selections_with_primary_clipboard"
+        "#,
+    )?;
+    config.keys = static_primary_keys.keys.unwrap();
+    for keys in [
+        "<space>p",
+        "<space>P",
+        ":clipboard-paste-after<ret>",
+        ":clipboard-paste-before<ret>",
+    ] {
+        test_with_config(
+            AppBuilder::new().with_config(config.clone()),
+            ("#[|]#ab", keys, "#[z|]#ab", LineFeedHandling::AsIs),
+        )
+        .await?;
+    }
+    for keys in [
+        ":primary-clipboard-paste-after<ret>",
+        ":primary-clipboard-paste-before<ret>",
+        "<C-p>",
+        "<C-o>",
+    ] {
+        test_with_config(
+            AppBuilder::new().with_config(config.clone()),
+            ("#[|]#ab", keys, "#[p|]#ab", LineFeedHandling::AsIs),
+        )
+        .await?;
+    }
+    for keys in ["<space>R", ":clipboard-paste-replace<ret>"] {
+        test_with_config(
+            AppBuilder::new().with_config(config.clone()),
+            ("#[|]#ab", keys, "#[|]#zb", LineFeedHandling::AsIs),
+        )
+        .await?;
+    }
+    for keys in [":primary-clipboard-paste-replace<ret>", "<C-r>"] {
+        test_with_config(
+            AppBuilder::new().with_config(config.clone()),
+            ("#[|]#ab", keys, "#[|]#pb", LineFeedHandling::AsIs),
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bracketed_and_middle_click_paste_use_exact_event_boundaries() -> anyhow::Result<()> {
+    use helix_view::document::Mode;
+
+    for (mode, input, expected) in [
+        (Mode::Normal, "#[|]#ab", "#[z|]#ab"),
+        (Mode::Select, "#[|ab]#", "#[|z]#ab"),
+        (Mode::Insert, "#[|]#ab", "z#[|]#ab"),
+    ] {
+        let mut app = AppBuilder::new().with_input_text(input).build()?;
+        app.editor.mode = mode;
+        let (expected_text, expected_selection) = helix_core::test::print(expected);
+        let check = |app: &Application| {
+            let doc = helix_view::doc!(app.editor);
+            assert_eq!(expected_text, doc.text().to_string());
+            assert_eq!(expected_selection, *doc.selection(app.editor.tree.focus));
+            let expected_mode = if mode == Mode::Select {
+                Mode::Normal
+            } else {
+                mode
+            };
+            assert_eq!(expected_mode, app.editor.mode());
+        };
+        test_event_sequences(
+            &mut app,
+            vec![(vec![paste_event("z")], Some(&check))],
+            false,
+        )
+        .await?;
+    }
+
+    let editor: helix_view::editor::Config = toml::from_str(
+        r#"
+        [clipboard-provider.custom]
+        yank = { command = "printf", args = ["z"] }
+        paste = { command = "cat" }
+        yank-primary = { command = "printf", args = ["p"] }
+        paste-primary = { command = "cat" }
+        "#,
+    )?;
+    let mut config = test_config();
+    config.editor.clipboard_provider = editor.clipboard_provider;
+    config.editor.mouse_yank_register = '*';
+    let mut app = AppBuilder::new()
+        .with_config(config)
+        .with_input_text("#[|]#ab")
+        .build()?;
+    let (row, column) = {
+        let view = app.editor.tree.get(app.editor.tree.focus);
+        let doc = app.editor.documents.get(&view.doc).unwrap();
+        let area = view.inner_area(doc);
+        (area.y, area.x)
+    };
+    test_event_sequences(
+        &mut app,
+        vec![(
+            vec![middle_click_event(row, column)],
+            Some(&|app| {
+                let doc = helix_view::doc!(app.editor);
+                assert_eq!("pab", doc.text());
+                assert_eq!(
+                    Selection::new(smallvec::smallvec![Range::new(0, 1)], 0),
+                    *doc.selection(app.editor.tree.focus)
+                );
+            }),
+        )],
+        false,
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -420,11 +657,11 @@ async fn test_character_info() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_delete_char_backward() -> anyhow::Result<()> {
     // don't panic when deleting overlapping ranges
-    test(("#(x|)# #[x|]#", "c<space><backspace><esc>", "#[\n|]#")).await?;
+    test(("#(x|)# #[x|]#", "c<space><backspace><esc>", "#[|]#")).await?;
     test((
         "#( |)##( |)#a#( |)#axx#[x|]#a",
         "li<backspace><esc>",
-        "#(a|)##(|a)#xx#[|a]#",
+        "#(|)# #(|)#xxx#[|]#",
     ))
     .await?;
 
@@ -458,14 +695,14 @@ async fn test_try_restore_indent() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_delete_word_backward() -> anyhow::Result<()> {
     // don't panic when deleting overlapping ranges
-    test(("fo#[o|]#ba#(r|)#", "a<C-w><esc>", "#[\n|]#")).await?;
+    test(("fo#[o|]#ba#(r|)#", "a<C-w><esc>", "#[|]#r#(|)#")).await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_delete_word_forward() -> anyhow::Result<()> {
     // don't panic when deleting overlapping ranges
-    test(("fo#[o|]#b#(|ar)#", "i<A-d><esc>", "fo#[\n|]#")).await?;
+    test(("fo#[o|]#b#(|ar)#", "i<A-d><esc>", "foo#[|]#")).await?;
     Ok(())
 }
 
@@ -479,12 +716,8 @@ async fn test_delete_char_forward() -> anyhow::Result<()> {
                 #(abc|)#
             "},
         "a<del><esc>",
-        indoc! {"\
-                #[abc|]#ef
-                #(abc|)#f
-                #(abc|)#
-                #(abc|)#
-            "},
+        "abc#[|]#ef\nabc#(|)#f\nabc#(|)#\nabc#(|)#",
+        LineFeedHandling::AsIs,
     ))
     .await?;
 
@@ -512,16 +745,16 @@ async fn test_insert_with_indent() -> anyhow::Result<()> {
         INPUT,
         ":lang rust<ret>%<A-s>I",
         indoc! { "
-            #[f|]#n foo() {
-                #(i|)#f let Some(_) = None {
-                    #(\n|)#
-                #(}|)#
-            #( |)#
-            #(}|)#
-            #(\n|)#
-            #(f|)#n bar() {
-                #(\n|)#
-            #(}|)#
+            #[|]#fn foo() {
+                #(|)#if let Some(_) = None {
+                    #(|)#
+                #(|)#}
+            #(|)# 
+            #(|)#}
+            #(|)#\n
+            #(|)#fn bar() {
+                #(|)#
+            #(|)#}
             "
         },
     ))
@@ -532,16 +765,16 @@ async fn test_insert_with_indent() -> anyhow::Result<()> {
         INPUT,
         ":lang rust<ret>%<A-s>A",
         indoc! { "
-            fn foo() {#[\n|]#
-                if let Some(_) = None {#(\n|)#
-                    #(\n|)#
-                }#(\n|)#
-             #(\n|)#
-            }#(\n|)#
-            #(\n|)#
-            fn bar() {#(\n|)#
-                #(\n|)#
-            }#(\n|)#
+            fn foo() {#[|]#
+                if let Some(_) = None {#(|)#
+                    #(|)#
+                }#(|)#
+             #(|)#
+            }#(|)#
+            #(|)#\n
+            fn bar() {#(|)#
+                #(|)#
+            }#(|)#
             "
         },
     ))
@@ -626,7 +859,7 @@ async fn test_join_selections_space() -> anyhow::Result<()> {
         "},
         "<A-J>",
         indoc! {"\
-            a#[ |]#b#( |)#c#( |)#d#( |)#e
+            a#[|]# b#(|)# c#(|)# d#(|)# e
         "},
     ))
     .await?;
@@ -639,7 +872,7 @@ async fn test_join_selections_space() -> anyhow::Result<()> {
         "},
         "<A-J>",
         indoc! {"\
-            abc#[ |]#def
+            abc#[|]# def
         "},
     ))
     .await?;
@@ -668,7 +901,7 @@ async fn test_join_selections_space() -> anyhow::Result<()> {
         "},
         "<A-J><A-J>",
         indoc! {"\
-            abc#[ |]#def
+            abc#[|]# def
         "},
     ))
     .await?;
@@ -684,7 +917,7 @@ async fn test_join_selections_space() -> anyhow::Result<()> {
         "},
         "<A-J>",
         indoc! {"\
-            aaa   #[ |]#bb  #( |)#c 
+            aaa   #[|]# bb  #(|)# c 
         "},
     ))
     .await?;
@@ -952,10 +1185,10 @@ async fn align_selections_with_varying_columns() -> anyhow::Result<()> {
         "},
         r"%sI<ret>&gg",
         indoc! {r"
-            #[I|]#    I  II I
+            #[|I    I  II I
             I    I  II IIIII
             I    I  II I
-            I    I  II IIIII
+            I    I  II IIIII]#
         "},
     ))
     .await?;

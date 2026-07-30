@@ -1229,7 +1229,7 @@ fn paste_clipboard_after(
         return Ok(());
     }
 
-    paste(cx.editor, '+', Paste::After, 1);
+    paste(cx.editor, '+', 1);
     Ok(())
 }
 
@@ -1242,7 +1242,7 @@ fn paste_clipboard_before(
         return Ok(());
     }
 
-    paste(cx.editor, '+', Paste::Before, 1);
+    paste(cx.editor, '+', 1);
     Ok(())
 }
 
@@ -1255,7 +1255,7 @@ fn paste_primary_clipboard_after(
         return Ok(());
     }
 
-    paste(cx.editor, '*', Paste::After, 1);
+    paste(cx.editor, '*', 1);
     Ok(())
 }
 
@@ -1268,7 +1268,7 @@ fn paste_primary_clipboard_before(
         return Ok(());
     }
 
-    paste(cx.editor, '*', Paste::Before, 1);
+    paste(cx.editor, '*', 1);
     Ok(())
 }
 
@@ -2444,14 +2444,21 @@ fn sort(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
     let text = doc.text().slice(..);
 
     let selection = doc.selection(view.id);
+    let effective_ranges: Vec<_> = selection
+        .iter()
+        .filter_map(|range| effective_char_range(text, *range))
+        .collect();
 
-    if selection.len() == 1 {
+    if effective_ranges.is_empty() {
+        return Ok(());
+    }
+    if effective_ranges.len() == 1 {
         bail!("Sorting requires multiple selections. Hint: split selection first");
     }
 
-    let mut fragments: Vec<_> = selection
-        .slices(text)
-        .map(|fragment| fragment.chunks().collect())
+    let mut fragments: Vec<_> = effective_ranges
+        .iter()
+        .map(|range| Tendril::from(range.fragment(text).as_ref()))
         .collect();
 
     fragments.sort_by(
@@ -2465,8 +2472,8 @@ fn sort(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
 
     let transaction = Transaction::change(
         doc.text(),
-        selection
-            .into_iter()
+        effective_ranges
+            .iter()
             .zip(fragments)
             .map(|(s, fragment)| (s.from(), s.to(), Some(fragment))),
     );
@@ -2500,6 +2507,9 @@ fn reflow(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
 
     let selection = doc.selection(view.id);
     let transaction = Transaction::change_by_selection(rope, selection, |range| {
+        let Some(range) = effective_char_range(rope.slice(..), *range) else {
+            return (range.head, range.head, None);
+        };
         let fragment = range.fragment(rope.slice(..));
         let reflowed_text = helix_core::wrap::reflow_hard_wrap(&fragment, text_width);
 
@@ -3446,7 +3456,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "clipboard-paste-after",
         aliases: &[],
-        doc: "Paste system clipboard after selections.",
+        doc: "Paste system clipboard at selection heads.",
         fun: paste_clipboard_after,
         completer: CommandCompleter::none(),
         signature: Signature {
@@ -3457,7 +3467,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "clipboard-paste-before",
         aliases: &[],
-        doc: "Paste system clipboard before selections.",
+        doc: "Paste system clipboard at selection heads.",
         fun: paste_clipboard_before,
         completer: CommandCompleter::none(),
         signature: Signature {
@@ -3479,7 +3489,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "primary-clipboard-paste-after",
         aliases: &[],
-        doc: "Paste primary clipboard after selections.",
+        doc: "Paste primary clipboard at selection heads.",
         fun: paste_primary_clipboard_after,
         completer: CommandCompleter::none(),
         signature: Signature {
@@ -3490,7 +3500,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "primary-clipboard-paste-before",
         aliases: &[],
-        doc: "Paste primary clipboard before selections.",
+        doc: "Paste primary clipboard at selection heads.",
         fun: paste_primary_clipboard_before,
         completer: CommandCompleter::none(),
         signature: Signature {

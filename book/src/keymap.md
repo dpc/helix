@@ -86,8 +86,8 @@ Normal mode is the default mode when you launch helix. You can return to it from
 | `Alt-u`     | Move backward in history                                             | `earlier`                 |
 | `Alt-U`     | Move forward in history                                              | `later`                   |
 | `y`         | Yank selection                                                       | `yank`                    |
-| `p`         | Paste after selection                                                | `paste_after`             |
-| `P`         | Paste before selection                                               | `paste_before`            |
+| `p`         | Paste at selection heads                                             | `paste_after`             |
+| `P`         | Paste at selection heads                                             | `paste_before`            |
 | `"` `<reg>` | Select a register to yank to or paste from                           | `select_register`         |
 | `>`         | Indent selection                                                     | `indent`                  |
 | `<`         | Unindent selection                                                   | `unindent`                |
@@ -315,8 +315,8 @@ This layer is a kludge of mappings, mostly pickers.
 | `c`     | Comment/uncomment selections                                            | `toggle_comments`                          |
 | `C`     | Block comment/uncomment selections                                      | `toggle_block_comments`                    |
 | `Alt-c` | Line comment/uncomment selections                                       | `toggle_line_comments`                     |
-| `p`     | Paste system clipboard after selections                                 | `paste_clipboard_after`                    |
-| `P`     | Paste system clipboard before selections                                | `paste_clipboard_before`                   |
+| `p`     | Paste system clipboard at selection heads                                | `paste_clipboard_after`                    |
+| `P`     | Paste system clipboard at selection heads                                | `paste_clipboard_before`                   |
 | `y`     | Yank selections to clipboard                                            | `yank_to_clipboard`                        |
 | `Y`     | Yank main selection to clipboard                                        | `yank_main_selection_to_clipboard`         |
 | `R`     | Replace selections by clipboard contents                                | `replace_selections_with_clipboard`        |

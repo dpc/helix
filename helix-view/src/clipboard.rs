@@ -254,10 +254,18 @@ mod external {
                 },
                 #[cfg(feature = "term")]
                 Self::Termcode => Err(ClipboardError::ReadingNotSupported),
-                Self::Custom(command_provider) => {
-                    execute_command(&command_provider.yank, None, true)?
-                        .ok_or(ClipboardError::MissingStdout)
-                }
+                Self::Custom(command_provider) => match clipboard_type {
+                    ClipboardType::Clipboard => {
+                        execute_command(&command_provider.yank, None, true)?
+                            .ok_or(ClipboardError::MissingStdout)
+                    }
+                    ClipboardType::Selection => {
+                        let Some(command) = command_provider.yank_primary.as_ref() else {
+                            return Ok(String::new());
+                        };
+                        execute_command(command, None, true)?.ok_or(ClipboardError::MissingStdout)
+                    }
+                },
                 Self::None => Err(ClipboardError::ReadingNotSupported),
             }
         }

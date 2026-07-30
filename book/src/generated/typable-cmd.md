@@ -39,11 +39,11 @@
 | `:clipboard-yank-join` | Yank joined selections into system clipboard. A separator can be provided as first argument. Default value is newline. |
 | `:primary-clipboard-yank` | Yank main selection into system primary clipboard. |
 | `:primary-clipboard-yank-join` | Yank joined selections into system primary clipboard. A separator can be provided as first argument. Default value is newline. |
-| `:clipboard-paste-after` | Paste system clipboard after selections. |
-| `:clipboard-paste-before` | Paste system clipboard before selections. |
+| `:clipboard-paste-after` | Paste system clipboard at selection heads. |
+| `:clipboard-paste-before` | Paste system clipboard at selection heads. |
 | `:clipboard-paste-replace` | Replace selections with content of system clipboard. |
-| `:primary-clipboard-paste-after` | Paste primary clipboard after selections. |
-| `:primary-clipboard-paste-before` | Paste primary clipboard before selections. |
+| `:primary-clipboard-paste-after` | Paste primary clipboard at selection heads. |
+| `:primary-clipboard-paste-before` | Paste primary clipboard at selection heads. |
 | `:primary-clipboard-paste-replace` | Replace selections with content of system primary clipboard. |
 | `:show-clipboard-provider` | Show clipboard provider name in status bar. |
 | `:change-current-directory`, `:cd` | Change the current working directory. |

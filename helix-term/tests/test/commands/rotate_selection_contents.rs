@@ -69,3 +69,40 @@ async fn rotate_selection_contents_backward_with_count() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rotate_selection_contents_preserves_primary_with_eof_point() -> anyhow::Result<()> {
+    let active_primary = "#[a|]#\n#(b|)#\n#(c|)#\n#(|)#";
+    test((
+        active_primary,
+        "<A-)>",
+        "#(c|)#\n#[a|]#\n#(b|)#\n#(|)#",
+        LineFeedHandling::AsIs,
+    ))
+    .await?;
+    test((
+        active_primary,
+        "<A-(>",
+        "#(b|)#\n#(c|)#\n#[a|]#\n#(|)#",
+        LineFeedHandling::AsIs,
+    ))
+    .await?;
+
+    let eof_primary = "#(a|)#\n#(b|)#\n#(c|)#\n#[|]#";
+    test((
+        eof_primary,
+        "<A-)>",
+        "#(c|)#\n#(a|)#\n#(b|)#\n#[|]#",
+        LineFeedHandling::AsIs,
+    ))
+    .await?;
+    test((
+        eof_primary,
+        "<A-(>",
+        "#(b|)#\n#(c|)#\n#(a|)#\n#[|]#",
+        LineFeedHandling::AsIs,
+    ))
+    .await?;
+
+    Ok(())
+}

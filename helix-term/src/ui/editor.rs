@@ -1558,12 +1558,7 @@ impl EditorView {
                     doc.set_selection(view_id, Selection::point(pos));
                     cxt.editor.focus(view_id);
 
-                    commands::paste(
-                        cxt.editor,
-                        config.mouse_yank_register,
-                        commands::Paste::Before,
-                        cxt.count(),
-                    );
+                    commands::paste(cxt.editor, config.mouse_yank_register, cxt.count());
 
                     return EventResult::Consumed(None);
                 }
