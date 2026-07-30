@@ -22,10 +22,100 @@ pub enum Direction {
     Backward,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Movement {
     Extend,
     Move,
+}
+
+/// Normal-mode shape for a motion that computes one destination edge.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum DestinationMotion {
+    /// Select the half-open interval traveled by the cursor.
+    LinearSelecting,
+    /// Relocate the cursor as a point.
+    Relocation,
+}
+
+impl DestinationMotion {
+    /// Applies this normal-mode shape, or extension in Select mode.
+    ///
+    /// `destination` must be an in-bounds grapheme edge in the same document as
+    /// `range`; this method does not validate or align it.
+    pub fn apply(self, range: Range, destination: usize, movement: Movement) -> Range {
+        if movement == Movement::Extend {
+            return Extension.apply(range, destination);
+        }
+        match self {
+            Self::LinearSelecting => Range::new(range.head, destination),
+            Self::Relocation => Range::point(destination),
+        }
+    }
+}
+
+/// Builds the range produced by extending an existing selection.
+#[derive(Debug, Copy, Clone)]
+pub struct Extension;
+
+impl Extension {
+    /// Preserves the input anchor and moves its head to `destination`.
+    ///
+    /// `destination` must be an in-bounds grapheme edge in the same document as
+    /// `range`; this method does not validate or align it.
+    pub fn apply(self, range: Range, destination: usize) -> Range {
+        Range::new(range.anchor, destination)
+    }
+}
+
+/// Selects a target's natural half-open range with an explicit arrival edge.
+#[derive(Debug, Copy, Clone)]
+pub struct TargetSelection {
+    /// Natural lower edge of the target.
+    from: usize,
+    /// Natural upper edge of the target.
+    to: usize,
+    /// Direction of travel, or `None` for a nondirectional target.
+    direction: Option<Direction>,
+}
+
+impl TargetSelection {
+    /// Creates a directional target selection.
+    ///
+    /// The target must contain in-bounds grapheme edges from one document.
+    pub fn directional(target: Range, direction: Direction) -> Self {
+        Self {
+            from: target.from(),
+            to: target.to(),
+            direction: Some(direction),
+        }
+    }
+
+    /// Creates a nondirectional target selection whose head is at its lower edge.
+    ///
+    /// The target must contain in-bounds grapheme edges from one document.
+    pub fn nondirectional(target: Range) -> Self {
+        Self {
+            from: target.from(),
+            to: target.to(),
+            direction: None,
+        }
+    }
+
+    /// Applies normal-mode target selection or select-mode extension.
+    pub fn apply(self, range: Range, movement: Movement) -> Range {
+        let head = match self.direction {
+            Some(Direction::Forward) => self.to,
+            Some(Direction::Backward) | None => self.from,
+        };
+        if movement == Movement::Extend {
+            Extension.apply(range, head)
+        } else {
+            match self.direction {
+                Some(Direction::Forward) => Range::new(self.from, self.to),
+                Some(Direction::Backward) | None => Range::new(self.to, self.from),
+            }
+        }
+    }
 }
 
 pub fn move_horizontally(
@@ -37,6 +127,9 @@ pub fn move_horizontally(
     _: &TextFormat,
     _: &mut TextAnnotations,
 ) -> Range {
+    if count == 0 {
+        return range;
+    }
     let pos = range.cursor(slice);
 
     // Compute the new position.
@@ -46,7 +139,7 @@ pub fn move_horizontally(
     };
 
     // Compute the final new range.
-    range.put_cursor(slice, new_pos, behaviour == Movement::Extend)
+    DestinationMotion::LinearSelecting.apply(range, new_pos, behaviour)
 }
 
 pub fn move_vertically_visual(
@@ -58,6 +151,9 @@ pub fn move_vertically_visual(
     text_fmt: &TextFormat,
     annotations: &mut TextAnnotations,
 ) -> Range {
+    if count == 0 {
+        return range;
+    }
     if !text_fmt.soft_wrap {
         return move_vertically(slice, range, dir, count, behaviour, text_fmt, annotations);
     }
@@ -90,12 +186,7 @@ pub fn move_vertically_visual(
         new_pos += (virtual_rows != 0) as usize;
     }
 
-    // Special-case to avoid moving to the end of the last non-empty line.
-    if behaviour == Movement::Extend && slice.line(slice.char_to_line(new_pos)).len_chars() == 0 {
-        return range;
-    }
-
-    let mut new_range = range.put_cursor(slice, new_pos, behaviour == Movement::Extend);
+    let mut new_range = DestinationMotion::Relocation.apply(range, new_pos, behaviour);
     new_range.old_visual_position = Some((0, new_col));
     new_range
 }
@@ -109,6 +200,9 @@ pub fn move_vertically(
     text_fmt: &TextFormat,
     annotations: &mut TextAnnotations,
 ) -> Range {
+    if count == 0 {
+        return range;
+    }
     annotations.clear_line_annotations();
     let pos = range.cursor(slice);
     let line_idx = slice.char_to_line(pos);
@@ -152,12 +246,7 @@ pub fn move_vertically(
         annotations,
     );
 
-    // Special-case to avoid moving to the end of the last non-empty line.
-    if behaviour == Movement::Extend && slice.line(new_line_idx).len_chars() == 0 {
-        return range;
-    }
-
-    let mut new_range = range.put_cursor(slice, new_pos, behaviour == Movement::Extend);
+    let mut new_range = DestinationMotion::Relocation.apply(range, new_pos, behaviour);
     new_range.old_visual_position = Some((new_row, new_col));
     new_range
 }
@@ -253,6 +342,9 @@ pub fn move_prev_paragraph(
     count: usize,
     behavior: Movement,
 ) -> Range {
+    if count == 0 {
+        return range;
+    }
     let cursor_pos = range.cursor(slice);
     let mut line = range.cursor_line(slice);
     let first_char = slice.line_to_char(line) == cursor_pos;
@@ -282,13 +374,7 @@ pub fn move_prev_paragraph(
     }
 
     let head = slice.line_to_char(line);
-    let anchor = if behavior == Movement::Move {
-        // With beam cursor, move creates selection from cursor (head) to new position
-        cursor_pos
-    } else {
-        range.put_cursor(slice, head, true).anchor
-    };
-    Range::new(anchor, head)
+    DestinationMotion::LinearSelecting.apply(range, head, behavior)
 }
 
 pub fn move_next_paragraph(
@@ -297,6 +383,9 @@ pub fn move_next_paragraph(
     count: usize,
     behavior: Movement,
 ) -> Range {
+    if count == 0 {
+        return range;
+    }
     let cursor_pos = range.cursor(slice);
     let mut line = range.cursor_line(slice);
     let last_char = prev_grapheme_boundary(slice, slice.line_to_char(line + 1)) == cursor_pos;
@@ -324,13 +413,7 @@ pub fn move_next_paragraph(
         last_line = line;
     }
     let head = slice.line_to_char(line);
-    let anchor = if behavior == Movement::Move {
-        // With beam cursor, move creates selection from cursor (head) to new position
-        cursor_pos
-    } else {
-        range.put_cursor(slice, head, true).anchor
-    };
-    Range::new(anchor, head)
+    DestinationMotion::LinearSelecting.apply(range, head, behavior)
 }
 
 // ---- util ------------
@@ -663,35 +746,12 @@ pub fn move_parent_node_end(
             }
         };
 
-        parent_node_end_range(range, end_head, text.len_chars(), movement)
+        parent_node_end_range(range, end_head, movement)
     })
 }
 
-fn parent_node_end_range(
-    range: Range,
-    mut end_head: usize,
-    text_len: usize,
-    movement: Movement,
-) -> Range {
-    if movement == Movement::Move {
-        if end_head == text_len {
-            return Range::point(end_head);
-        }
-        // preserve direction of original range
-        if range.direction() == Direction::Forward {
-            Range::new(end_head, end_head + 1)
-        } else {
-            Range::new(end_head + 1, end_head)
-        }
-    } else {
-        // Keep the legacy inclusive adjustment away from EOF until Stage 2
-        // converts this command's broad motion semantics.
-        if range.anchor <= end_head && end_head < text_len {
-            end_head += 1;
-        }
-
-        Range::new(range.anchor, end_head)
-    }
+fn parent_node_end_range(range: Range, destination: usize, movement: Movement) -> Range {
+    DestinationMotion::LinearSelecting.apply(range, destination, movement)
 }
 
 #[cfg(test)]
@@ -793,6 +853,7 @@ mod test {
         ];
 
         for ((direction, amount), coordinates) in moves_and_expected_coordinates {
+            let previous = range;
             range = move_horizontally(
                 slice,
                 range,
@@ -803,7 +864,11 @@ mod test {
                 &mut TextAnnotations::default(),
             );
             assert_eq!(coords_at_pos(slice, range.head), coordinates.into());
-            assert_eq!(range.head, range.anchor);
+            if amount == 0 {
+                assert_eq!(range, previous);
+            } else {
+                assert_eq!(range.anchor, previous.head);
+            }
         }
     }
 
@@ -896,6 +961,8 @@ mod test {
         ];
 
         for ((axis, direction, amount), coordinates) in moves_and_expected_coordinates {
+            let previous_head = range.head;
+            let is_horizontal = matches!(&axis, Axis::H);
             range = match axis {
                 Axis::H => move_horizontally(
                     slice,
@@ -917,7 +984,11 @@ mod test {
                 ),
             };
             assert_eq!(coords_at_pos(slice, range.head), coordinates.into());
-            assert_eq!(range.head, range.anchor);
+            if is_horizontal {
+                assert_eq!(range.anchor, previous_head);
+            } else {
+                assert_eq!(range.head, range.anchor);
+            }
         }
     }
 
@@ -947,6 +1018,8 @@ mod test {
         ];
 
         for ((axis, direction, amount), coordinates) in moves_and_expected_coordinates {
+            let previous_head = range.head;
+            let is_horizontal = matches!(&axis, Axis::H);
             range = match axis {
                 Axis::H => move_horizontally(
                     slice,
@@ -968,7 +1041,11 @@ mod test {
                 ),
             };
             assert_eq!(coords_at_pos(slice, range.head), coordinates.into());
-            assert_eq!(range.head, range.anchor);
+            if is_horizontal {
+                assert_eq!(range.anchor, previous_head);
+            } else {
+                assert_eq!(range.head, range.anchor);
+            }
         }
     }
 
@@ -1002,17 +1079,98 @@ mod test {
     }
 
     #[test]
+    fn motion_shapes_are_explicit_and_direction_preserving() {
+        let forward = Range::new(2, 6);
+        let backward = Range::new(6, 2);
+
+        assert_eq!(
+            DestinationMotion::LinearSelecting.apply(forward, 9, Movement::Move),
+            Range::new(6, 9)
+        );
+        assert_eq!(
+            DestinationMotion::LinearSelecting.apply(backward, 9, Movement::Move),
+            Range::new(2, 9)
+        );
+        assert_eq!(
+            DestinationMotion::Relocation.apply(forward, 9, Movement::Move),
+            Range::point(9)
+        );
+        assert_eq!(Extension.apply(forward, 1), Range::new(2, 1));
+        assert_eq!(Extension.apply(backward, 7), Range::new(6, 7));
+    }
+
+    #[test]
+    fn target_selection_uses_travel_or_neutral_arrival_edge() {
+        let input = Range::new(3, 5);
+        let target = Range::new(10, 14);
+
+        assert_eq!(
+            TargetSelection::directional(target, Direction::Forward).apply(input, Movement::Move),
+            Range::new(10, 14)
+        );
+        assert_eq!(
+            TargetSelection::directional(target, Direction::Backward).apply(input, Movement::Move),
+            Range::new(14, 10)
+        );
+        assert_eq!(
+            TargetSelection::nondirectional(target).apply(input, Movement::Move),
+            Range::new(14, 10)
+        );
+        assert_eq!(
+            TargetSelection::directional(target, Direction::Forward).apply(input, Movement::Extend),
+            Range::new(3, 14)
+        );
+        assert_eq!(
+            TargetSelection::directional(target, Direction::Backward)
+                .apply(input, Movement::Extend),
+            Range::new(3, 10)
+        );
+    }
+
+    #[test]
+    fn vertical_extension_reaches_trailing_empty_line() {
+        let text = Rope::from("a\n");
+        let range = Range::point(0);
+        let mut annotations = TextAnnotations::default();
+        let physical = move_vertically(
+            text.slice(..),
+            range,
+            Direction::Forward,
+            1,
+            Movement::Extend,
+            &TextFormat::default(),
+            &mut annotations,
+        );
+        assert_eq!((physical.anchor, physical.head), (0, 2));
+
+        let format = TextFormat {
+            soft_wrap: true,
+            ..TextFormat::default()
+        };
+        let visual = move_vertically_visual(
+            text.slice(..),
+            range,
+            Direction::Forward,
+            1,
+            Movement::Extend,
+            &format,
+            &mut TextAnnotations::default(),
+        );
+        assert_eq!((visual.anchor, visual.head), (0, 2));
+    }
+
+    #[test]
     fn parent_node_exclusive_eof_end_stays_in_bounds() {
         let eof = 6;
         for input in [Range::point(3), Range::new(2, 4), Range::new(5, 3)] {
             assert_eq!(
-                parent_node_end_range(input, eof, eof, Movement::Extend),
+                parent_node_end_range(input, eof, Movement::Extend),
                 Range::new(input.anchor, eof)
             );
         }
         assert_eq!(
-            parent_node_end_range(Range::new(2, 4), eof, eof, Movement::Move),
-            Range::point(eof)
+            parent_node_end_range(Range::new(2, 4), eof, Movement::Move),
+            Range::new(4, eof)
         );
     }
 

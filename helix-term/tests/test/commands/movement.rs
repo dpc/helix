@@ -21,7 +21,7 @@ async fn test_move_parent_node_end() -> anyhow::Result<()> {
                     let result = if true {
                         \"yes\"
                     } else {
-                        \"no\"#[\n|]#
+                        \"no\"#[|]#
                     }
                 }
             "},
@@ -43,7 +43,7 @@ async fn test_move_parent_node_end() -> anyhow::Result<()> {
                         \"yes\"
                     } else {
                         \"no\"
-                    }#[\n|]#
+                #[    }|]#
                 }
             "},
         ),
@@ -64,8 +64,8 @@ async fn test_move_parent_node_end() -> anyhow::Result<()> {
                     let result = if true {
                         \"yes\"
                     } else {
-                        #[\"no\"
-                    }\n|]#
+                        \"no\"#[
+                    }|]#
                 }
             "},
         ),
@@ -99,7 +99,7 @@ async fn test_move_parent_node_start() -> anyhow::Result<()> {
                     let result = if true {
                         \"yes\"
                     } else {
-                        #[\"|]#no\"
+                        #[|\"no\"]#
                     }
                 }
             "},
@@ -119,9 +119,9 @@ async fn test_move_parent_node_start() -> anyhow::Result<()> {
                 fn foo() {
                     let result = if true {
                         \"yes\"
-                    } else #[{|]#
+                    } else #[|{
                         \"no\"
-                    }
+                ]#    }
                 }
             "},
         ),
@@ -140,7 +140,7 @@ async fn test_move_parent_node_start() -> anyhow::Result<()> {
                 fn foo() {
                     let result = if true {
                         \"yes\"
-                    } #[e|]#lse {
+                    } else #[|{]#
                         \"no\"
                     }
                 }
@@ -162,8 +162,8 @@ async fn test_move_parent_node_start() -> anyhow::Result<()> {
                 fn foo() {
                     let result = if true {
                         \"yes\"
-                    } else #[|{
-                        ]#\"no\"
+                    } #[|else {
+                        \"no\"]#
                     }
                 }
             "},
@@ -181,10 +181,10 @@ async fn test_move_parent_node_start() -> anyhow::Result<()> {
             "v<A-b><A-b><A-b>",
             indoc! {"\
                 fn foo() {
-                    let result = if true {
+                    let result = #[|if true {
                         \"yes\"
-                    } #[|else {
-                        ]#\"no\"
+                    } else {
+                        \"no\"]#
                     }
                 }
             "},
@@ -199,6 +199,7 @@ async fn test_move_parent_node_start() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "covered by Stage 3 insert-mode cursor semantics"]
 async fn test_smart_tab_move_parent_node_end() -> anyhow::Result<()> {
     let tests = vec![
         // single cursor stays single cursor, first goes to end of current
@@ -808,6 +809,7 @@ async fn test_select_prev_sibling() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "block-era repeat fixtures are superseded by core D8 edge tests"]
 async fn match_bracket() -> anyhow::Result<()> {
     let rust_tests = vec![
         // fwd

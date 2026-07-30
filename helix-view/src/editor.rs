@@ -46,6 +46,7 @@ pub use helix_core::diagnostic::Severity;
 use helix_core::{
     auto_pairs::AutoPairs,
     diagnostic::DiagnosticProvider,
+    movement::{DestinationMotion, Movement},
     syntax::{
         self,
         config::{AutoPairConfig, IndentationHeuristic, LanguageServerFeature, SoftWrap},
@@ -2653,8 +2654,17 @@ impl Editor {
                 doc: old_doc_id,
             });
         }
+        let mode = self.mode;
         let (view, doc) = current!(self);
-        doc.set_selection(view_id, selection);
+        let destination = selection.primary().head;
+        let input = doc.selection(view_id).primary();
+        let movement = if mode == Mode::Select {
+            Movement::Extend
+        } else {
+            Movement::Move
+        };
+        let range = DestinationMotion::Relocation.apply(input, destination, movement);
+        doc.set_selection(view_id, Selection::new([range].into(), 0));
         view.ensure_cursor_in_view_center(doc, self.config.load().scrolloff);
     }
 }

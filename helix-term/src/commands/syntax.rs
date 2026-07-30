@@ -10,8 +10,9 @@ use futures_util::FutureExt;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{sinks, BinaryDetection, SearcherBuilder};
 use helix_core::{
+    movement::TargetSelection,
     syntax::{Loader, QueryMatchIterEvent},
-    Rope, RopeSlice, Selection, Syntax, Uri,
+    Range, Rope, RopeSlice, Selection, Syntax, Uri,
 };
 use helix_stdx::{
     path,
@@ -33,7 +34,7 @@ use crate::{
     },
 };
 
-use super::Context;
+use super::{movement_from_mode, Context};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TagKind {
@@ -202,10 +203,13 @@ pub fn syntax_symbol_picker(cx: &mut Context) {
         tags,
         (),
         move |cx, tag, action| {
+            let mode = cx.editor.mode;
             cx.editor.switch(doc_id, action);
             let view = view_mut!(cx.editor);
             let doc = doc_mut!(cx.editor, &doc_id);
-            doc.set_selection(view.id, Selection::single(tag.start, tag.end));
+            let range = TargetSelection::nondirectional(Range::new(tag.start, tag.end))
+                .apply(doc.selection(view.id).primary(), movement_from_mode(mode));
+            doc.set_selection(view.id, Selection::new([range].into(), 0));
             if action.align_view(view, doc.id()) {
                 align_view(doc, view, Align::Center)
             }
@@ -429,6 +433,7 @@ pub fn syntax_workspace_symbol_picker(cx: &mut Context) {
         [],
         state,
         move |cx, tag, action| {
+            let mode = cx.editor.mode;
             let doc_id = match &tag.doc {
                 UriOrDocumentId::Id(id) => *id,
                 UriOrDocumentId::Uri(uri) => match cx.editor.open(uri.as_path().expect(""), action) {
@@ -447,7 +452,9 @@ pub fn syntax_workspace_symbol_picker(cx: &mut Context) {
                 cx.editor.set_error("The location you jumped to does not exist anymore because the file has changed.");
                 return;
             }
-            doc.set_selection(view.id, Selection::single(tag.start, tag.end));
+            let range = TargetSelection::nondirectional(Range::new(tag.start, tag.end))
+                .apply(doc.selection(view.id).primary(), movement_from_mode(mode));
+            doc.set_selection(view.id, Selection::new([range].into(), 0));
             if action.align_view(view, doc.id()) {
                 align_view(doc, view, Align::Center)
             }

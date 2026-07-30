@@ -11,7 +11,7 @@ use helix_lsp::{
 use tokio_stream::StreamExt;
 use tui::{text::Span, widgets::Row};
 
-use super::{align_view, push_jump, Align, Context, Editor};
+use super::{align_view, movement_from_mode, push_jump, Align, Context, Editor, TargetSelection};
 
 use helix_core::{
     diagnostic::DiagnosticProvider, syntax::config::LanguageServerFeature,
@@ -143,6 +143,7 @@ fn jump_to_position(
     offset_encoding: OffsetEncoding,
     action: Action,
 ) {
+    let mode = editor.mode;
     let doc = match editor.open(path, action) {
         Ok(id) => doc_mut!(editor, &id),
         Err(err) => {
@@ -160,9 +161,9 @@ fn jump_to_position(
         log::warn!("lsp position out of bounds - {:?}", range);
         return;
     };
-    // we flip the range so that the cursor sits on the start of the symbol
-    // (for example start of the function).
-    doc.set_selection(view.id, Selection::single(new_range.head, new_range.anchor));
+    let input = doc.selection(view.id).primary();
+    let range = TargetSelection::nondirectional(new_range).apply(input, movement_from_mode(mode));
+    doc.set_selection(view.id, Selection::new([range].into(), 0));
     if action.align_view(view, doc.id()) {
         align_view(doc, view, Align::Center);
     }
@@ -1304,7 +1305,7 @@ fn aligned_primary_index(
             let aligned = range.grapheme_aligned(text);
             (aligned.contains(pos) || (aligned.is_empty() && aligned.head == pos)).then_some(index)
         })
-        .last()
+        .next_back()
         .unwrap_or(0)
 }
 

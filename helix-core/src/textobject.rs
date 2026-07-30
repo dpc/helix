@@ -431,6 +431,17 @@ mod test {
     }
 
     #[test]
+    fn word_textobject_is_a_point_at_exact_eof() {
+        let text = Rope::from("word");
+        for object in [TextObject::Inside, TextObject::Around] {
+            assert_eq!(
+                textobject_word(text.slice(..), Range::point(4), object, 1, false),
+                Range::point(4)
+            );
+        }
+    }
+
+    #[test]
     fn test_textobject_paragraph_inside_single() {
         let tests = [
             ("#[|]#", "#[|]#"),

@@ -62,7 +62,7 @@ use helix_view::{
 use anyhow::{anyhow, bail, ensure, Context as _};
 use arc_swap::access::DynAccess;
 use insert::*;
-use movement::Movement;
+use movement::{DestinationMotion, Extension, Movement, TargetSelection};
 
 use crate::{
     compositor::{self, Component, Compositor},
@@ -728,6 +728,23 @@ fn no_op(_cx: &mut Context) {}
 type MoveFn =
     fn(RopeSlice, Range, Direction, usize, Movement, &TextFormat, &mut TextAnnotations) -> Range;
 
+fn movement_from_mode(mode: Mode) -> Movement {
+    if mode == Mode::Select {
+        Movement::Extend
+    } else {
+        Movement::Move
+    }
+}
+
+fn select_directional_target(
+    input: Range,
+    target: Range,
+    direction: Direction,
+    mode: Mode,
+) -> Range {
+    TargetSelection::directional(target, direction).apply(input, movement_from_mode(mode))
+}
+
 fn move_impl(cx: &mut Context, move_fn: MoveFn, dir: Direction, behaviour: Movement) {
     let count = cx.count();
     let (view, doc) = current!(cx.editor);
@@ -753,57 +770,11 @@ fn move_impl(cx: &mut Context, move_fn: MoveFn, dir: Direction, behaviour: Movem
 use helix_core::movement::{move_horizontally, move_vertically};
 
 fn move_char_left(cx: &mut Context) {
-    // Move left and select the character we moved over
-    let count = cx.count();
-    let (view, doc) = current!(cx.editor);
-    let text = doc.text().slice(..);
-    let text_fmt = doc.text_format(view.inner_area(doc).width, None);
-    let mut annotations = view.text_annotations(doc, None);
-
-    let selection = doc.selection(view.id).clone().transform(|range| {
-        let pos = range.cursor(text);
-        let new_pos = move_horizontally(
-            text,
-            range,
-            Direction::Backward,
-            count,
-            Movement::Move,
-            &text_fmt,
-            &mut annotations,
-        )
-        .cursor(text);
-        // Select the character we moved over, with cursor (head) at new position
-        Range::new(pos, new_pos)
-    });
-    drop(annotations);
-    doc.set_selection(view.id, selection);
+    move_impl(cx, move_horizontally, Direction::Backward, Movement::Move)
 }
 
 fn move_char_right(cx: &mut Context) {
-    // Move right and select the character we moved over
-    let count = cx.count();
-    let (view, doc) = current!(cx.editor);
-    let text = doc.text().slice(..);
-    let text_fmt = doc.text_format(view.inner_area(doc).width, None);
-    let mut annotations = view.text_annotations(doc, None);
-
-    let selection = doc.selection(view.id).clone().transform(|range| {
-        let pos = range.cursor(text);
-        let new_pos = move_horizontally(
-            text,
-            range,
-            Direction::Forward,
-            count,
-            Movement::Move,
-            &text_fmt,
-            &mut annotations,
-        )
-        .cursor(text);
-        // Select the character we moved over (from old pos to new_pos)
-        Range::new(pos, new_pos)
-    });
-    drop(annotations);
-    doc.set_selection(view.id, selection);
+    move_impl(cx, move_horizontally, Direction::Forward, Movement::Move)
 }
 
 fn move_line_up(cx: &mut Context) {
@@ -874,11 +845,7 @@ fn goto_line_end_impl(view: &mut View, doc: &mut Document, movement: Movement) {
         // With edge-based selections, position cursor at line end (before newline)
         let pos = line_end_char_index(&text, line);
 
-        if movement == Movement::Extend {
-            range.put_cursor(text, pos, true)
-        } else {
-            Range::new(range.cursor(text), pos)
-        }
+        DestinationMotion::LinearSelecting.apply(range, pos, movement)
     });
     doc.set_selection(view.id, selection);
 }
@@ -910,11 +877,7 @@ fn goto_line_end_newline_impl(view: &mut View, doc: &mut Document, movement: Mov
         // one exists, and EOF for an unterminated final line.
         let pos = line_end_newline_position(text, line);
 
-        if movement == Movement::Extend {
-            range.put_cursor(text, pos, true)
-        } else {
-            Range::new(range.cursor(text), pos)
-        }
+        DestinationMotion::LinearSelecting.apply(range, pos, movement)
     });
     doc.set_selection(view.id, selection);
 }
@@ -949,11 +912,7 @@ fn goto_line_start_impl(view: &mut View, doc: &mut Document, movement: Movement)
 
         // adjust to start of the line
         let pos = text.line_to_char(line);
-        if movement == Movement::Extend {
-            range.put_cursor(text, pos, true)
-        } else {
-            Range::new(range.cursor(text), pos)
-        }
+        DestinationMotion::LinearSelecting.apply(range, pos, movement)
     });
     doc.set_selection(view.id, selection);
 }
@@ -1083,11 +1042,7 @@ fn goto_first_nonwhitespace_impl(view: &mut View, doc: &mut Document, movement: 
 
         if let Some(pos) = text.line(line).first_non_whitespace_char() {
             let pos = pos + text.line_to_char(line);
-            if movement == Movement::Extend {
-                range.put_cursor(text, pos, true)
-            } else {
-                Range::new(range.cursor(text), pos)
-            }
+            DestinationMotion::LinearSelecting.apply(range, pos, movement)
         } else {
             range
         }
@@ -1241,11 +1196,9 @@ fn goto_window(cx: &mut Context, align: Align) {
         .pos_at_visual_coords(doc, visual_line as u16, 0, false)
         .expect("visual_line was constrained to the view area");
 
-    let text = doc.text().slice(..);
-    let selection = doc
-        .selection(view.id)
-        .clone()
-        .transform(|range| range.put_cursor(text, pos, cx.editor.mode == Mode::Select));
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        DestinationMotion::Relocation.apply(range, pos, movement_from_mode(cx.editor.mode))
+    });
     doc.set_selection(view.id, selection);
 }
 
@@ -1270,9 +1223,8 @@ where
     let text = doc.text().slice(..);
 
     let selection = doc.selection(view.id).clone().transform(|range| {
-        let pos = range.cursor(text);
         let new_pos = move_fn(text, range, count).cursor(text);
-        Range::new(pos, new_pos)
+        DestinationMotion::LinearSelecting.apply(range, new_pos, Movement::Move)
     });
     doc.set_selection(view.id, selection);
 }
@@ -1369,11 +1321,10 @@ fn goto_file_start_impl(cx: &mut Context, movement: Movement) {
         goto_line_impl(cx, movement);
     } else {
         let (view, doc) = current!(cx.editor);
-        let text = doc.text().slice(..);
         let selection = doc
             .selection(view.id)
             .clone()
-            .transform(|range| range.put_cursor(text, 0, movement == Movement::Extend));
+            .transform(|range| DestinationMotion::LinearSelecting.apply(range, 0, movement));
         push_jump(view, doc);
         doc.set_selection(view.id, selection);
     }
@@ -1389,12 +1340,11 @@ fn extend_to_file_end(cx: &mut Context) {
 
 fn goto_file_end_impl(cx: &mut Context, movement: Movement) {
     let (view, doc) = current!(cx.editor);
-    let text = doc.text().slice(..);
     let pos = doc.text().len_chars();
     let selection = doc
         .selection(view.id)
         .clone()
-        .transform(|range| range.put_cursor(text, pos, movement == Movement::Extend));
+        .transform(|range| DestinationMotion::LinearSelecting.apply(range, pos, movement));
     push_jump(view, doc);
     doc.set_selection(view.id, selection);
 }
@@ -1664,9 +1614,8 @@ where
     let text = doc.text().slice(..);
 
     let selection = doc.selection(view.id).clone().transform(|range| {
-        let word = extend_fn(text, range, count);
-        let pos = word.cursor(text);
-        range.put_cursor(text, pos, true)
+        let destination = extend_fn(text, range, count).cursor(text);
+        Extension.apply(range, destination)
     });
     doc.set_selection(view.id, selection);
 }
@@ -1735,23 +1684,22 @@ fn find_char_line_ending_motion(
     let text = doc.text().slice(..);
 
     let selection = doc.selection(view.id).clone().transform(|range| {
-        let cursor_anchor = range.cursor(text);
-        let cursor_head = next_grapheme_boundary(text, cursor_anchor);
+        let cursor_edge = range.cursor(text);
         let cursor_line = range.cursor_line(text);
 
         let pos = match direction {
             Direction::Forward => {
                 let line_end = line_end_char_index(&text, cursor_line);
-                let on_edge = if inclusive {
-                    line_end == cursor_anchor
-                } else {
-                    line_end == cursor_head || line_end == cursor_anchor
-                };
+                let on_edge = !inclusive && line_end == cursor_edge;
                 let line = cursor_line + count - 1 + on_edge as usize;
                 if line >= text.len_lines() - 1 {
                     return range;
                 }
-                line_end_char_index(&text, line) - !inclusive as usize
+                if inclusive {
+                    line_end_newline_position(text, line)
+                } else {
+                    line_end_char_index(&text, line)
+                }
             }
             Direction::Backward => {
                 if inclusive {
@@ -1761,21 +1709,25 @@ fn find_char_line_ending_motion(
                     }
                     line_end_char_index(&text, line as usize)
                 } else {
-                    let on_edge = text.line_to_char(cursor_line) == cursor_anchor;
+                    let on_edge = text.line_to_char(cursor_line) == cursor_edge;
                     let line = cursor_line as isize - count as isize + 1 - on_edge as isize;
                     if line <= 0 {
                         return range;
                     }
-                    text.line_to_char(line as usize)
+                    line_end_newline_position(text, line as usize - 1)
                 }
             }
         };
 
-        if extend {
-            range.put_cursor(text, pos, true)
-        } else {
-            Range::point(range.cursor(text)).put_cursor(text, pos, true)
-        }
+        DestinationMotion::LinearSelecting.apply(
+            range,
+            pos,
+            if extend {
+                Movement::Extend
+            } else {
+                Movement::Move
+            },
+        )
     });
     doc.set_selection(view.id, selection);
 }
@@ -1825,11 +1777,15 @@ fn find_char(cx: &mut Context, direction: Direction, inclusive: bool, extend: bo
                             (false, Direction::Backward) => pos + 1,
                         })
                         .map_or(range, |pos| {
-                            if extend {
-                                range.put_cursor(text, pos, true)
-                            } else {
-                                Range::point(range.cursor(text)).put_cursor(text, pos, true)
-                            }
+                            DestinationMotion::LinearSelecting.apply(
+                                range,
+                                pos,
+                                if extend {
+                                    Movement::Extend
+                                } else {
+                                    Movement::Move
+                                },
+                            )
                         })
                 });
 
@@ -2095,14 +2051,8 @@ pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, sync_cursor
         }
     }
 
-    let anchor = if cx.editor.mode == Mode::Select {
-        range.anchor
-    } else {
-        head
-    };
-
-    // replace primary selection with an empty selection at cursor pos
-    let prim_sel = Range::new(anchor, head);
+    let prim_sel =
+        DestinationMotion::Relocation.apply(range, head, movement_from_mode(cx.editor.mode));
     let mut sel = doc.selection(view.id).clone();
     let idx = sel.primary_index();
     sel = sel.replace(idx, prim_sel);
@@ -2165,7 +2115,7 @@ fn page_cursor_half_down(cx: &mut Context) {
 //
 // TODO: implement a variant of that uses visual lines and respects virtual text
 fn copy_selection_on_line(cx: &mut Context, direction: Direction) {
-    use helix_core::{pos_at_visual_coords, visual_coords_at_pos};
+    use helix_core::visual_coords_at_pos;
 
     let count = cx.count();
     let (view, doc) = current!(cx.editor);
@@ -2173,30 +2123,16 @@ fn copy_selection_on_line(cx: &mut Context, direction: Direction) {
     let selection = doc.selection(view.id);
     let mut ranges = SmallVec::with_capacity(selection.ranges().len() * (count + 1));
     ranges.extend_from_slice(selection.ranges());
-    let mut primary_index = 0;
+    let mut primary_index = selection.primary_index();
     for range in selection.iter() {
         let is_primary = *range == selection.primary();
 
-        // The range is always head exclusive
-        let (head, anchor) = if range.anchor < range.head {
-            (range.head - 1, range.anchor)
-        } else {
-            (range.head, range.anchor.saturating_sub(1))
-        };
-
         let tab_width = doc.tab_width();
 
-        let head_pos = visual_coords_at_pos(text, head, tab_width);
-        let anchor_pos = visual_coords_at_pos(text, anchor, tab_width);
+        let head_pos = visual_coords_at_pos(text, range.head, tab_width);
+        let anchor_pos = visual_coords_at_pos(text, range.anchor, tab_width);
 
-        let height = std::cmp::max(head_pos.row, anchor_pos.row)
-            - std::cmp::min(head_pos.row, anchor_pos.row)
-            + 1;
-
-        if is_primary {
-            primary_index = ranges.len();
-        }
-        ranges.push(*range);
+        let height = copied_range_height(text, *range);
 
         let mut sels = 0;
         let mut i = 0;
@@ -2217,19 +2153,12 @@ fn copy_selection_on_line(cx: &mut Context, direction: Direction) {
                 break;
             }
 
-            let anchor =
-                pos_at_visual_coords(text, Position::new(anchor_row, anchor_pos.col), tab_width);
-            let head = pos_at_visual_coords(text, Position::new(head_row, head_pos.col), tab_width);
-
-            // skip lines that are too short
-            if visual_coords_at_pos(text, anchor, tab_width).col == anchor_pos.col
-                && visual_coords_at_pos(text, head, tab_width).col == head_pos.col
+            if let Some(copied) = copy_range_to_rows(text, *range, anchor_row, head_row, tab_width)
             {
                 if is_primary {
                     primary_index = ranges.len();
                 }
-                // This is Range::new(anchor, head), but it will place the cursor on the correct column
-                ranges.push(Range::point(anchor).put_cursor(text, head, true));
+                ranges.push(copied);
                 sels += 1;
             }
 
@@ -2243,6 +2172,30 @@ fn copy_selection_on_line(cx: &mut Context, direction: Direction) {
 
     let selection = Selection::new(ranges, primary_index);
     doc.set_selection(view.id, selection);
+}
+
+fn copied_range_height(text: RopeSlice, range: Range) -> usize {
+    let (first_line, last_line) = range.line_range(text);
+    last_line - first_line + 1
+}
+
+#[allow(deprecated)]
+fn copy_range_to_rows(
+    text: RopeSlice,
+    range: Range,
+    anchor_row: usize,
+    head_row: usize,
+    tab_width: usize,
+) -> Option<Range> {
+    use helix_core::{pos_at_visual_coords, visual_coords_at_pos};
+
+    let anchor_column = visual_coords_at_pos(text, range.anchor, tab_width).col;
+    let head_column = visual_coords_at_pos(text, range.head, tab_width).col;
+    let anchor = pos_at_visual_coords(text, Position::new(anchor_row, anchor_column), tab_width);
+    let head = pos_at_visual_coords(text, Position::new(head_row, head_column), tab_width);
+    (visual_coords_at_pos(text, anchor, tab_width).col == anchor_column
+        && visual_coords_at_pos(text, head, tab_width).col == head_column)
+        .then_some(Range::new(anchor, head))
 }
 
 fn copy_selection_on_prev_line(cx: &mut Context) {
@@ -2322,11 +2275,17 @@ fn merge_consecutive_selections(cx: &mut Context) {
     doc.set_selection(view.id, selection);
 }
 
+#[derive(Debug, Copy, Clone)]
+enum SearchAction {
+    Motion(Movement),
+    Add,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn search_impl(
     editor: &mut Editor,
     regex: &rope::Regex,
-    movement: Movement,
+    action: SearchAction,
     direction: Direction,
     scrolloff: usize,
     wrap_around: bool,
@@ -2336,8 +2295,7 @@ fn search_impl(
     let text = doc.text().slice(..);
     let selection = doc.selection(view.id);
 
-    // Get the right side of the primary block cursor for forward search, or the
-    // grapheme before the start of the selection for reverse search.
+    // Start beyond the current target in the requested direction.
     let start = match direction {
         Direction::Forward => text.char_to_byte(graphemes::ensure_grapheme_boundary_next(
             text,
@@ -2391,13 +2349,18 @@ fn search_impl(
             return;
         }
 
-        // Determine range direction based on the primary range
         let primary = selection.primary();
-        let range = Range::new(start, end).with_direction(primary.direction());
+        let range = TargetSelection::directional(Range::new(start, end), direction).apply(
+            primary,
+            match action {
+                SearchAction::Motion(movement) => movement,
+                SearchAction::Add => Movement::Move,
+            },
+        );
 
-        let selection = match movement {
-            Movement::Extend => selection.clone().push(range),
-            Movement::Move => selection.clone().replace(selection.primary_index(), range),
+        let selection = match action {
+            SearchAction::Add => selection.clone().push(range),
+            SearchAction::Motion(_) => selection.clone().replace(selection.primary_index(), range),
         };
 
         doc.set_selection(view.id, selection);
@@ -2456,7 +2419,7 @@ fn searcher(cx: &mut Context, direction: Direction) {
             search_impl(
                 cx.editor,
                 &regex,
-                movement,
+                SearchAction::Motion(movement),
                 direction,
                 scrolloff,
                 wrap_around,
@@ -2466,7 +2429,7 @@ fn searcher(cx: &mut Context, direction: Direction) {
     );
 }
 
-fn search_next_or_prev_impl(cx: &mut Context, movement: Movement, direction: Direction) {
+fn search_next_or_prev_impl(cx: &mut Context, action: SearchAction, direction: Direction) {
     let count = cx.count();
     let register = cx
         .register
@@ -2495,7 +2458,7 @@ fn search_next_or_prev_impl(cx: &mut Context, movement: Movement, direction: Dir
                 search_impl(
                     cx.editor,
                     &regex,
-                    movement,
+                    action,
                     direction,
                     scrolloff,
                     wrap_around,
@@ -2510,18 +2473,22 @@ fn search_next_or_prev_impl(cx: &mut Context, movement: Movement, direction: Dir
 }
 
 fn search_next(cx: &mut Context) {
-    search_next_or_prev_impl(cx, Movement::Move, Direction::Forward);
+    search_next_or_prev_impl(cx, SearchAction::Motion(Movement::Move), Direction::Forward);
 }
 
 fn search_prev(cx: &mut Context) {
-    search_next_or_prev_impl(cx, Movement::Move, Direction::Backward);
+    search_next_or_prev_impl(
+        cx,
+        SearchAction::Motion(Movement::Move),
+        Direction::Backward,
+    );
 }
 fn extend_search_next(cx: &mut Context) {
-    search_next_or_prev_impl(cx, Movement::Extend, Direction::Forward);
+    search_next_or_prev_impl(cx, SearchAction::Add, Direction::Forward);
 }
 
 fn extend_search_prev(cx: &mut Context) {
-    search_next_or_prev_impl(cx, Movement::Extend, Direction::Backward);
+    search_next_or_prev_impl(cx, SearchAction::Add, Direction::Backward);
 }
 
 fn search_selection(cx: &mut Context) {
@@ -3531,10 +3498,17 @@ fn jumplist_picker(cx: &mut Context) {
         }),
         PathStyleConfig::new(&cx.editor.theme),
         |cx, meta, action| {
+            let mode = cx.editor.mode;
             cx.editor.switch(meta.id, action);
             let config = cx.editor.config();
             let (view, doc) = (view_mut!(cx.editor), doc_mut!(cx.editor, &meta.id));
-            doc.set_selection(view.id, meta.selection.clone());
+            let destination = meta.selection.primary().head;
+            let range = DestinationMotion::Relocation.apply(
+                doc.selection(view.id).primary(),
+                destination,
+                movement_from_mode(mode),
+            );
+            doc.set_selection(view.id, Selection::new([range].into(), 0));
             if action.align_view(view, doc.id()) {
                 view.ensure_cursor_in_view_center(doc, config.scrolloff);
             }
@@ -4092,7 +4066,7 @@ fn goto_line_without_jumplist(
         let selection = doc
             .selection(view.id)
             .clone()
-            .transform(|range| range.put_cursor(text, pos, movement == Movement::Extend));
+            .transform(|range| DestinationMotion::Relocation.apply(range, pos, movement));
 
         doc.set_selection(view.id, selection);
     }
@@ -4119,7 +4093,7 @@ fn goto_last_line_impl(cx: &mut Context, movement: Movement) {
     let selection = doc
         .selection(view.id)
         .clone()
-        .transform(|range| range.put_cursor(text, pos, movement == Movement::Extend));
+        .transform(|range| DestinationMotion::Relocation.apply(range, pos, movement));
 
     push_jump(view, doc);
     doc.set_selection(view.id, selection);
@@ -4142,7 +4116,7 @@ fn goto_column_impl(cx: &mut Context, movement: Movement) {
         let line_start = text.line_to_char(line);
         let line_end = line_end_char_index(&text, line);
         let pos = graphemes::nth_next_grapheme_boundary(text, line_start, count - 1).min(line_end);
-        range.put_cursor(text, pos, movement == Movement::Extend)
+        DestinationMotion::Relocation.apply(range, pos, movement)
     });
     push_jump(view, doc);
     doc.set_selection(view.id, selection);
@@ -4160,12 +4134,10 @@ fn goto_last_accessed_file(cx: &mut Context) {
 fn goto_last_modification(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     let pos = doc.history.get_mut().last_edit_pos();
-    let text = doc.text().slice(..);
     if let Some(pos) = pos {
-        let selection = doc
-            .selection(view.id)
-            .clone()
-            .transform(|range| range.put_cursor(text, pos, cx.editor.mode == Mode::Select));
+        let selection = doc.selection(view.id).clone().transform(|range| {
+            DestinationMotion::Relocation.apply(range, pos, movement_from_mode(cx.editor.mode))
+        });
         push_jump(view, doc);
         doc.set_selection(view.id, selection);
     }
@@ -4208,7 +4180,16 @@ fn exit_select_mode(cx: &mut Context) {
 fn goto_first_diag(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     let selection = match doc.diagnostics().first() {
-        Some(diag) => Selection::single(diag.range.start, diag.range.end),
+        Some(diag) => Selection::new(
+            [select_directional_target(
+                doc.selection(view.id).primary(),
+                Range::new(diag.range.start, diag.range.end),
+                Direction::Forward,
+                cx.editor.mode,
+            )]
+            .into(),
+            0,
+        ),
         None => return,
     };
     push_jump(view, doc);
@@ -4220,7 +4201,16 @@ fn goto_first_diag(cx: &mut Context) {
 fn goto_last_diag(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     let selection = match doc.diagnostics().last() {
-        Some(diag) => Selection::single(diag.range.start, diag.range.end),
+        Some(diag) => Selection::new(
+            [select_directional_target(
+                doc.selection(view.id).primary(),
+                Range::new(diag.range.start, diag.range.end),
+                Direction::Backward,
+                cx.editor.mode,
+            )]
+            .into(),
+            0,
+        ),
         None => return,
     };
     push_jump(view, doc);
@@ -4244,7 +4234,16 @@ fn goto_next_diag(cx: &mut Context) {
             .find(|diag| diag.range.start > cursor_pos);
 
         let selection = match diag {
-            Some(diag) => Selection::single(diag.range.start, diag.range.end),
+            Some(diag) => Selection::new(
+                [select_directional_target(
+                    doc.selection(view.id).primary(),
+                    Range::new(diag.range.start, diag.range.end),
+                    Direction::Forward,
+                    editor.mode,
+                )]
+                .into(),
+                0,
+            ),
             None => return,
         };
         push_jump(view, doc);
@@ -4272,9 +4271,16 @@ fn goto_prev_diag(cx: &mut Context) {
             .find(|diag| diag.range.start < cursor_pos);
 
         let selection = match diag {
-            // NOTE: the selection is reversed because we're jumping to the
-            // previous diagnostic.
-            Some(diag) => Selection::single(diag.range.end, diag.range.start),
+            Some(diag) => Selection::new(
+                [select_directional_target(
+                    doc.selection(view.id).primary(),
+                    Range::new(diag.range.start, diag.range.end),
+                    Direction::Backward,
+                    editor.mode,
+                )]
+                .into(),
+                0,
+            ),
             None => return,
         };
         push_jump(view, doc);
@@ -4295,6 +4301,7 @@ fn goto_last_change(cx: &mut Context) {
 
 fn goto_first_change_impl(cx: &mut Context, reverse: bool) {
     let editor = &mut cx.editor;
+    let mode = editor.mode;
     let (view, doc) = current!(editor);
     if let Some(handle) = doc.diff_handle() {
         let hunk = {
@@ -4307,9 +4314,20 @@ fn goto_first_change_impl(cx: &mut Context, reverse: bool) {
             diff.nth_hunk(idx)
         };
         if hunk != Hunk::NONE {
-            let range = hunk_range(hunk, doc.text().slice(..));
+            let target = hunk_range(hunk, doc.text().slice(..));
+            let direction = if reverse {
+                Direction::Backward
+            } else {
+                Direction::Forward
+            };
+            let range = select_directional_target(
+                doc.selection(view.id).primary(),
+                target,
+                direction,
+                mode,
+            );
             push_jump(view, doc);
-            doc.set_selection(view.id, Selection::single(range.anchor, range.head));
+            doc.set_selection(view.id, Selection::new([range].into(), 0));
         }
     }
 }
@@ -4325,6 +4343,7 @@ fn goto_prev_change(cx: &mut Context) {
 fn goto_next_change_impl(cx: &mut Context, direction: Direction) {
     let count = cx.count() as u32 - 1;
     let motion = move |editor: &mut Editor| {
+        let mode = editor.mode;
         let (view, doc) = current!(editor);
         let doc_text = doc.text().slice(..);
         let diff_handle = if let Some(diff_handle) = doc.diff_handle() {
@@ -4350,18 +4369,7 @@ fn goto_next_change_impl(cx: &mut Context, direction: Direction) {
                 return range;
             };
             let hunk = diff.nth_hunk(hunk_idx);
-            let new_range = hunk_range(hunk, doc_text);
-            if editor.mode == Mode::Select {
-                let head = if new_range.head < range.anchor {
-                    new_range.anchor
-                } else {
-                    new_range.head
-                };
-
-                Range::new(range.anchor, head)
-            } else {
-                new_range.with_direction(direction)
-            }
+            select_directional_target(range, hunk_range(hunk, doc_text), direction, mode)
         });
 
         push_jump(view, doc);
@@ -5859,17 +5867,31 @@ fn shrink_selection(cx: &mut Context) {
     cx.editor.apply_motion(motion);
 }
 
-fn select_sibling_impl<F>(cx: &mut Context, sibling_fn: F)
+fn select_sibling_impl<F>(cx: &mut Context, direction: Direction, sibling_fn: F)
 where
     F: Fn(&helix_core::Syntax, RopeSlice, Selection) -> Selection + 'static,
 {
     let motion = move |editor: &mut Editor| {
+        let mode = editor.mode;
         let (view, doc) = current!(editor);
 
         if let Some(syntax) = doc.syntax() {
             let text = doc.text().slice(..);
             let current_selection = doc.selection(view.id);
-            let selection = sibling_fn(syntax, text, current_selection.clone());
+            let targets = sibling_fn(syntax, text, current_selection.clone());
+            let ranges = current_selection
+                .iter()
+                .zip(targets.iter())
+                .map(|(input, target)| {
+                    if input == target {
+                        *input
+                    } else {
+                        TargetSelection::directional(*target, direction)
+                            .apply(*input, movement_from_mode(mode))
+                    }
+                })
+                .collect();
+            let selection = Selection::new(ranges, targets.primary_index());
             doc.set_selection(view.id, selection);
         }
     };
@@ -5877,11 +5899,11 @@ where
 }
 
 fn select_next_sibling(cx: &mut Context) {
-    select_sibling_impl(cx, object::select_next_sibling)
+    select_sibling_impl(cx, Direction::Forward, object::select_next_sibling)
 }
 
 fn select_prev_sibling(cx: &mut Context) {
-    select_sibling_impl(cx, object::select_prev_sibling)
+    select_sibling_impl(cx, Direction::Backward, object::select_prev_sibling)
 }
 
 fn move_node_bound_impl(cx: &mut Context, dir: Direction, movement: Movement) {
@@ -5954,8 +5976,8 @@ fn select_all_children(cx: &mut Context) {
 }
 
 fn match_brackets(cx: &mut Context) {
+    let movement = movement_from_mode(cx.editor.mode);
     let (view, doc) = current!(cx.editor);
-    let is_select = cx.editor.mode == Mode::Select;
     let text = doc.text();
     let text_slice = text.slice(..);
 
@@ -5965,7 +5987,16 @@ fn match_brackets(cx: &mut Context) {
             || match_brackets::find_matching_bracket_plaintext(text.slice(..), pos),
             |syntax| match_brackets::find_matching_bracket_fuzzy(syntax, text.slice(..), pos),
         ) {
-            range.put_cursor(text_slice, matched_pos, is_select)
+            let target = Range::new(
+                matched_pos,
+                graphemes::next_grapheme_boundary(text_slice, matched_pos),
+            );
+            let direction = if matched_pos < pos {
+                Direction::Backward
+            } else {
+                Direction::Forward
+            };
+            TargetSelection::directional(target, direction).apply(range, movement)
         } else {
             range
         }
@@ -6224,6 +6255,7 @@ fn scroll_down(cx: &mut Context) {
 fn goto_ts_object_impl(cx: &mut Context, object: &'static str, direction: Direction) {
     let count = cx.count();
     let motion = move |editor: &mut Editor| {
+        let mode = editor.mode;
         let (view, doc) = current!(editor);
         let loader = editor.syn_loader.load();
         if let Some(syntax) = doc.syntax() {
@@ -6234,17 +6266,7 @@ fn goto_ts_object_impl(cx: &mut Context, object: &'static str, direction: Direct
                     text, range, object, direction, syntax, &loader, count,
                 );
 
-                if editor.mode == Mode::Select {
-                    let head = if new_range.head < range.anchor {
-                        new_range.anchor
-                    } else {
-                        new_range.head
-                    };
-
-                    Range::new(range.anchor, head)
-                } else {
-                    new_range.with_direction(direction)
-                }
+                select_directional_target(range, new_range, direction, mode)
             });
 
             push_jump(view, doc);
@@ -6327,6 +6349,7 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
         cx.editor.autoinfo = None;
         if let Some(ch) = event.char() {
             let textobject = move |editor: &mut Editor| {
+                let mode = editor.mode;
                 let (view, doc) = current!(editor);
                 let loader = editor.syn_loader.load();
                 let text = doc.text().slice(..);
@@ -6362,7 +6385,7 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
                 };
 
                 let selection = doc.selection(view.id).clone().transform(|range| {
-                    match ch {
+                    let target = match ch {
                         'w' => textobject::textobject_word(text, range, objtype, count, false),
                         'W' => textobject::textobject_word(text, range, objtype, count, true),
                         't' => textobject_treesitter("class", range),
@@ -6391,6 +6414,12 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
                             count,
                         ),
                         _ => range,
+                    };
+                    if target == range {
+                        range
+                    } else {
+                        TargetSelection::directional(target, Direction::Forward)
+                            .apply(range, movement_from_mode(mode))
                     }
                 });
                 doc.set_selection(view.id, selection);
@@ -7067,7 +7096,7 @@ fn extend_to_word(cx: &mut Context) {
     jump_to_word(cx, Movement::Extend)
 }
 
-fn jump_to_label(cx: &mut Context, labels: Vec<Range>, behaviour: Movement) {
+fn jump_to_label(cx: &mut Context, labels: Vec<(Range, Direction)>, behaviour: Movement) {
     let doc = doc!(cx.editor);
     let alphabet = &cx.editor.config().jump_label_alphabet;
     if labels.is_empty() {
@@ -7084,7 +7113,7 @@ fn jump_to_label(cx: &mut Context, labels: Vec<Range>, behaviour: Movement) {
     let mut overlays: Vec<_> = labels
         .iter()
         .enumerate()
-        .flat_map(|(i, range)| {
+        .flat_map(|(i, (range, _))| {
             [
                 Overlay::new(range.from(), alphabet_char(i / alphabet.len())),
                 Overlay::new(
@@ -7129,27 +7158,9 @@ fn jump_to_label(cx: &mut Context, labels: Vec<Range>, behaviour: Movement) {
             else {
                 return;
             };
-            if let Some(mut range) = labels.get(outer + inner).copied() {
-                range = if behaviour == Movement::Extend {
-                    let anchor = if range.anchor < range.head {
-                        let from = primary_selection.from();
-                        if range.anchor < from {
-                            range.anchor
-                        } else {
-                            from
-                        }
-                    } else {
-                        let to = primary_selection.to();
-                        if range.anchor > to {
-                            range.anchor
-                        } else {
-                            to
-                        }
-                    };
-                    Range::new(anchor, range.head)
-                } else {
-                    range.with_direction(Direction::Forward)
-                };
+            if let Some((target, direction)) = labels.get(outer + inner).copied() {
+                let range = TargetSelection::directional(target, direction)
+                    .apply(primary_selection, behaviour);
                 let doc = doc_mut!(cx.editor, &doc);
                 let view = view_mut!(cx.editor, view_id);
                 push_jump(view, doc);
@@ -7216,7 +7227,7 @@ fn jump_to_word(cx: &mut Context, behaviour: Movement) {
                 .chars_at(cursor_fwd.anchor)
                 .take_while(|&c| !char_is_word(c))
                 .count();
-            words.push(cursor_fwd);
+            words.push((cursor_fwd, Direction::Forward));
             if words.len() == jump_label_limit {
                 break 'outer;
             }
@@ -7244,7 +7255,7 @@ fn jump_to_word(cx: &mut Context, behaviour: Movement) {
                 .reversed()
                 .take_while(|&c| !char_is_word(c))
                 .count();
-            words.push(cursor_rev);
+            words.push((cursor_rev, Direction::Backward));
             if words.len() == jump_label_limit {
                 break 'outer;
             }

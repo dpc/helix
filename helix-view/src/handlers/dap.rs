@@ -1,9 +1,12 @@
 use crate::editor::{Action, Breakpoint};
-use crate::{align_view, Align, Editor};
+use crate::{align_view, document::Mode, Align, Editor};
 use anyhow::bail;
 use dap::requests::DisconnectArguments;
 use dap::requests::ThreadsArguments;
-use helix_core::Selection;
+use helix_core::{
+    movement::{Movement, TargetSelection},
+    Range, Selection,
+};
 use helix_dap::{
     self as dap, registry::DebugAdapterId, Client, ConnectionType, Payload, Request, ThreadId,
 };
@@ -58,6 +61,7 @@ pub async fn fetch_stack_trace(debugger: &mut Client, thread_id: ThreadId) {
 }
 
 pub fn jump_to_stack_frame(editor: &mut Editor, frame: &helix_dap::StackFrame) {
+    let mode = editor.mode;
     let path = if let Some(helix_dap::Source {
         path: Some(ref path),
         ..
@@ -75,15 +79,24 @@ pub fn jump_to_stack_frame(editor: &mut Editor, frame: &helix_dap::StackFrame) {
 
     let (view, doc) = current!(editor);
 
-    let text_end = doc.text().len_chars().saturating_sub(1);
     let start = dap_pos_to_pos(doc.text(), frame.line, frame.column).unwrap_or(0);
     let end = frame
         .end_line
         .and_then(|end_line| dap_pos_to_pos(doc.text(), end_line, frame.end_column.unwrap_or(0)))
         .unwrap_or(start);
 
-    let selection = Selection::single(start.min(text_end), end.min(text_end));
-    doc.set_selection(view.id, selection);
+    if doc.text().len_chars() < start || doc.text().len_chars() < end {
+        warn!("debug adapter returned a stack frame outside the document");
+        return;
+    }
+    let movement = if mode == Mode::Select {
+        Movement::Extend
+    } else {
+        Movement::Move
+    };
+    let range = TargetSelection::nondirectional(Range::new(start, end))
+        .apply(doc.selection(view.id).primary(), movement);
+    doc.set_selection(view.id, Selection::new([range].into(), 0));
     align_view(doc, view, Align::Center);
 }
 
