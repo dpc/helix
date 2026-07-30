@@ -1,7 +1,7 @@
 use ropey::RopeSlice;
 use smallvec::SmallVec;
 
-use crate::{chars::char_is_word, Range, Rope, Selection, Tendril};
+use crate::{chars::char_is_word, selection::UnalignedSelection, Range, Rope, Selection, Tendril};
 use std::{borrow::Cow, iter::once};
 
 /// (from, to, replacement)
@@ -476,10 +476,9 @@ impl ChangeSet {
                                 if pos == old_pos && assoc.stay_at_gaps() {
                                     new_pos
                                 } else {
-                                    let ins = assoc.insert_offset(s);
                                     // if the deleted and inserted text have the exact same size
                                     // keep the relative offset into the new text
-                                    if *len == ins && assoc.sticky() {
+                                    if *len == s.chars().count() && assoc.sticky() {
                                         new_pos + (pos - old_pos)
                                     } else {
                                         new_pos + assoc.insert_offset(s)
@@ -715,7 +714,7 @@ impl Transaction {
         selection: &Selection,
         mut change_range: impl FnMut(&Range) -> (usize, usize),
         mut create_tendril: impl FnMut(usize, usize) -> Option<Tendril>,
-    ) -> (Transaction, Selection) {
+    ) -> (Transaction, UnalignedSelection) {
         let mut last_selection_idx = None;
         let mut new_primary_idx = None;
         let mut ranges: SmallVec<[Range; 1]> = SmallVec::new();
@@ -744,7 +743,10 @@ impl Transaction {
 
         (
             transaction,
-            Selection::new(ranges, new_primary_idx.unwrap_or(0)),
+            UnalignedSelection(Selection::new_unaligned(
+                ranges,
+                new_primary_idx.unwrap_or(0),
+            )),
         )
     }
 
@@ -796,7 +798,10 @@ impl Transaction {
             (from, to, replacement)
         });
 
-        transaction.with_selection(Selection::new(end_ranges, selection.primary_index()))
+        transaction.with_selection(Selection::new_unaligned(
+            end_ranges,
+            selection.primary_index(),
+        ))
     }
 
     /// Generate a transaction with a deletion per selection range.
@@ -859,7 +864,10 @@ impl Transaction {
             (from, to)
         });
 
-        transaction.with_selection(Selection::new(end_ranges, selection.primary_index()))
+        transaction.with_selection(Selection::new_unaligned(
+            end_ranges,
+            selection.primary_index(),
+        ))
     }
 
     /// Insert text at each selection head.
@@ -1120,19 +1128,34 @@ mod test {
         };
         let t1 = Transaction::insert(&state.doc, &state.selection, Tendril::from("h"));
         t1.apply(&mut state.doc);
-        state.selection = state.selection.clone().map(t1.changes());
+        state.selection = state
+            .selection
+            .clone()
+            .map(t1.changes(), state.doc.slice(..));
         let t2 = Transaction::insert(&state.doc, &state.selection, Tendril::from("e"));
         t2.apply(&mut state.doc);
-        state.selection = state.selection.clone().map(t2.changes());
+        state.selection = state
+            .selection
+            .clone()
+            .map(t2.changes(), state.doc.slice(..));
         let t3 = Transaction::insert(&state.doc, &state.selection, Tendril::from("l"));
         t3.apply(&mut state.doc);
-        state.selection = state.selection.clone().map(t3.changes());
+        state.selection = state
+            .selection
+            .clone()
+            .map(t3.changes(), state.doc.slice(..));
         let t4 = Transaction::insert(&state.doc, &state.selection, Tendril::from("l"));
         t4.apply(&mut state.doc);
-        state.selection = state.selection.clone().map(t4.changes());
+        state.selection = state
+            .selection
+            .clone()
+            .map(t4.changes(), state.doc.slice(..));
         let t5 = Transaction::insert(&state.doc, &state.selection, Tendril::from("o"));
         t5.apply(&mut state.doc);
-        state.selection = state.selection.clone().map(t5.changes());
+        state.selection = state
+            .selection
+            .clone()
+            .map(t5.changes(), state.doc.slice(..));
 
         assert_eq!(state.doc, Rope::from_str("hello"));
 

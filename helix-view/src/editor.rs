@@ -2645,7 +2645,7 @@ impl Editor {
             let new_doc = doc_mut!(self, &dest_doc_id);
             if let Some(transaction) = view.changes_to_sync(new_doc) {
                 let text = new_doc.text().slice(..);
-                selection = selection.map(transaction.changes()).ensure_invariants(text);
+                selection = selection.map(transaction.changes(), text);
             }
             self.replace_document_in_view(view_id, dest_doc_id);
             dispatch(DocumentFocusLost {

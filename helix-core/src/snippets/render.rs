@@ -140,7 +140,11 @@ impl Snippet {
         selection: &Selection,
         change_range: impl FnMut(&selection::Range) -> (usize, usize),
         ctx: &mut SnippetRenderCtx,
-    ) -> (Transaction, Selection, RenderedSnippet) {
+    ) -> (
+        Transaction,
+        crate::selection::UnalignedSelection,
+        RenderedSnippet,
+    ) {
         let mut snippet = self.prepare_render();
         let mut off = 0;
         let (transaction, selection) = Transaction::change_by_selection_ignore_overlapping(

@@ -127,7 +127,8 @@ pub fn print(s: &str) -> (String, Selection) {
         None => panic!("missing primary `#[|]#` {:?}", s),
     };
 
-    let selection = Selection::new(ranges, primary);
+    let text = Rope::from(left.as_str());
+    let selection = Selection::new(ranges, primary).ensure_invariants(text.slice(..));
     (left, selection)
 }
 
@@ -249,8 +250,8 @@ mod test {
                 Selection::new(
                     SmallVec::from_slice(&[
                         Range::new(7, 5),
-                        Range::new(21, 19),
-                        Range::new(14, 12)
+                        Range::new(14, 12),
+                        Range::new(21, 19)
                     ]),
                     0
                 )

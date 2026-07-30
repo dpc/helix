@@ -85,9 +85,7 @@ pub fn textobject_word(
     let cat_at = char_at.map(categorize_char);
 
     // If cursor is at whitespace or end of document, return zero-width range
-    if cat_at.map_or(true, |c| {
-        matches!(c, CharCategory::Whitespace | CharCategory::Eol)
-    }) {
+    if cat_at.is_none_or(|c| matches!(c, CharCategory::Whitespace | CharCategory::Eol)) {
         return Range::new(cursor_pos, cursor_pos);
     }
 

@@ -40,6 +40,9 @@ use std::{
     path::Path,
 };
 
+#[cfg(test)]
+mod edge_selection_tests;
+
 /// Gets the first language server that is attached to a document which supports a specific feature.
 /// If there is no configured language server that supports the feature, this displays a status message.
 /// Using this macro in a context where the editor automatically queries the LSP
@@ -1289,6 +1292,22 @@ pub fn rename_symbol(cx: &mut Context) {
     }
 }
 
+fn aligned_primary_index(
+    text: helix_core::RopeSlice,
+    ranges: &[helix_core::Range],
+    pos: usize,
+) -> usize {
+    ranges
+        .iter()
+        .enumerate()
+        .filter_map(|(index, range)| {
+            let aligned = range.grapheme_aligned(text);
+            (aligned.contains(pos) || (aligned.is_empty() && aligned.head == pos)).then_some(index)
+        })
+        .last()
+        .unwrap_or(0)
+}
+
 pub fn select_references_to_symbol_under_cursor(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     let language_server =
@@ -1311,20 +1330,17 @@ pub fn select_references_to_symbol_under_cursor(cx: &mut Context) {
             let pos = doc.selection(view.id).primary().cursor(text.slice(..));
 
             // We must find the range that contains our primary cursor to prevent our primary cursor to move
-            let mut primary_index = 0;
-            let ranges = document_highlights
+            let ranges: helix_core::SmallVec<[helix_core::Range; 1]> = document_highlights
                 .iter()
                 .filter_map(|highlight| lsp_range_to_range(text, highlight.range, offset_encoding))
-                .enumerate()
-                .map(|(i, range)| {
-                    if range.contains(pos) {
-                        primary_index = i;
-                    }
-                    range
-                })
                 .collect();
-            let selection = Selection::new(ranges, primary_index);
-            doc.set_selection(view.id, selection);
+            if ranges.is_empty() {
+                return;
+            }
+            let primary_index = aligned_primary_index(text.slice(..), &ranges, pos);
+            if let Ok(selection) = Selection::try_new(ranges, primary_index, text.slice(..)) {
+                doc.set_selection(view.id, selection);
+            }
         },
     );
 }

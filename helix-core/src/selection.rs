@@ -21,6 +21,46 @@ use helix_stdx::rope::{self, RopeSliceExt};
 use smallvec::{smallvec, SmallVec};
 use std::{borrow::Cow, iter, slice};
 
+/// Reports a selection endpoint outside the document's scalar-edge domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionBoundsError {
+    /// The invalid character edge.
+    pub position: usize,
+    /// The document's valid EOF edge.
+    pub len_chars: usize,
+}
+
+/// Returns the character with right affinity at `edge`.
+///
+/// EOF is a valid edge with no right-hand character. Out-of-bounds edges are
+/// rejected rather than clamped.
+pub fn char_at_edge(text: RopeSlice, edge: usize) -> Result<Option<char>, SelectionBoundsError> {
+    if text.len_chars() < edge {
+        return Err(SelectionBoundsError {
+            position: edge,
+            len_chars: text.len_chars(),
+        });
+    }
+    Ok(text.get_char(edge))
+}
+
+/// Returns adjacency candidates at an edge, checking right before left.
+///
+/// This helper is reserved for commands such as brace and surround discovery
+/// whose semantics explicitly inspect both sides of the beam.
+pub fn adjacent_char_positions(
+    text: RopeSlice,
+    edge: usize,
+) -> Result<impl Iterator<Item = usize>, SelectionBoundsError> {
+    char_at_edge(text, edge)?;
+    Ok([
+        Some(edge).filter(|&pos| pos < text.len_chars()),
+        edge.checked_sub(1),
+    ]
+    .into_iter()
+    .flatten())
+}
+
 /// A single selection range.
 ///
 /// A range consists of an "anchor" and "head" position in
@@ -185,20 +225,23 @@ impl Range {
         if changes.is_empty() {
             return self;
         }
+        let unequal_replacements = UnequalReplacements::new(changes);
 
         let positions_to_map = match self.anchor.cmp(&self.head) {
             Ordering::Equal => [
                 (&mut self.anchor, Assoc::AfterSticky),
                 (&mut self.head, Assoc::AfterSticky),
             ],
-            Ordering::Less => [
-                (&mut self.anchor, Assoc::AfterSticky),
-                (&mut self.head, Assoc::BeforeSticky),
-            ],
-            Ordering::Greater => [
-                (&mut self.head, Assoc::AfterSticky),
-                (&mut self.anchor, Assoc::BeforeSticky),
-            ],
+            Ordering::Less => {
+                let lower = endpoint_assoc(&unequal_replacements, self.anchor, EndpointRole::Lower);
+                let upper = endpoint_assoc(&unequal_replacements, self.head, EndpointRole::Upper);
+                [(&mut self.anchor, lower), (&mut self.head, upper)]
+            }
+            Ordering::Greater => {
+                let lower = endpoint_assoc(&unequal_replacements, self.head, EndpointRole::Lower);
+                let upper = endpoint_assoc(&unequal_replacements, self.anchor, EndpointRole::Upper);
+                [(&mut self.head, lower), (&mut self.anchor, upper)]
+            }
         };
         changes.update_positions(positions_to_map.into_iter());
         self.old_visual_position = None;
@@ -275,9 +318,15 @@ impl Range {
     ///
     /// Zero-width ranges will always stay zero-width, and non-zero-width
     /// ranges will never collapse to zero-width.
+    ///
+    /// # Panics
+    ///
+    /// Panics when either endpoint is beyond `slice`'s EOF edge. Use
+    /// [`Selection::try_ensure_invariants`] for fallible external input.
     #[must_use]
     pub fn grapheme_aligned(&self, slice: RopeSlice) -> Self {
         use std::cmp::Ordering;
+        assert!(self.anchor <= slice.len_chars() && self.head <= slice.len_chars());
         let (new_anchor, new_head) = match self.anchor.cmp(&self.head) {
             Ordering::Equal => {
                 let pos = ensure_grapheme_boundary_prev(slice, self.anchor);
@@ -381,6 +430,46 @@ impl Range {
     }
 }
 
+#[derive(Clone, Copy)]
+enum EndpointRole {
+    Lower,
+    Upper,
+}
+
+struct UnequalReplacements(Vec<(usize, usize)>);
+
+impl UnequalReplacements {
+    fn new(changes: &ChangeSet) -> Self {
+        Self(
+            changes
+                .changes_iter()
+                .filter_map(|(from, to, replacement)| {
+                    let inserted_len = replacement.map_or(0, |text| text.chars().count());
+                    (to - from != inserted_len).then_some((from, to))
+                })
+                .collect(),
+        )
+    }
+
+    fn contains(&self, position: usize) -> bool {
+        let index = self.0.partition_point(|&(from, _)| from < position);
+        index != 0 && position < self.0[index - 1].1
+    }
+}
+
+fn endpoint_assoc(
+    unequal_replacements: &UnequalReplacements,
+    position: usize,
+    role: EndpointRole,
+) -> Assoc {
+    let inside_unequal_replacement = unequal_replacements.contains(position);
+
+    match (role, inside_unequal_replacement) {
+        (EndpointRole::Lower, false) | (EndpointRole::Upper, true) => Assoc::AfterSticky,
+        (EndpointRole::Upper, false) | (EndpointRole::Lower, true) => Assoc::BeforeSticky,
+    }
+}
+
 impl From<(usize, usize)> for Range {
     fn from((anchor, head): (usize, usize)) -> Self {
         Self {
@@ -406,6 +495,27 @@ impl From<Range> for helix_stdx::Range {
 pub struct Selection {
     ranges: SmallVec<[Range; 1]>,
     primary_index: usize,
+}
+
+/// A restricted selection whose ranges have not been aligned or normalized.
+///
+/// Transaction builders use this type to preserve every scalar participant
+/// until phase-1 mapping completes.
+pub struct UnalignedSelection(pub(crate) Selection);
+
+impl UnalignedSelection {
+    /// Returns the logical primary participant before alignment.
+    pub fn primary_index(&self) -> usize {
+        self.0.primary_index()
+    }
+
+    /// Maps scalar endpoints without alignment or collision normalization.
+    ///
+    /// The returned transient selection must not be stored directly. Align it
+    /// against post-change text and run exactly one D10 normalization first.
+    pub fn map_no_normalize(self, changes: &ChangeSet) -> Selection {
+        self.0.map_no_normalize(changes)
+    }
 }
 
 #[allow(clippy::len_without_is_empty)] // a Selection is never empty
@@ -463,18 +573,29 @@ impl Selection {
         self.normalize()
     }
 
-    /// Map selections over a set of changes. Useful for adjusting the selection position after
-    /// applying changes to a document.
-    pub fn map(self, changes: &ChangeSet) -> Self {
-        self.map_no_normalize(changes).normalize()
+    /// Maps scalar endpoints, aligns them against the post-change text, then normalizes once.
+    ///
+    /// `new_text` must be the document text after `changes` has been applied.
+    pub fn map(self, changes: &ChangeSet, new_text: RopeSlice) -> Self {
+        let mut selection = self.map_no_normalize(changes);
+        for range in &mut selection.ranges {
+            *range = range.grapheme_aligned(new_text);
+        }
+        selection.normalize()
     }
 
     /// Map selections over a set of changes. Useful for adjusting the selection position after
     /// applying changes to a document. Doesn't normalize the selection
+    /// Performs only phase 1 of edit mapping.
+    ///
+    /// The result may be unaligned or overlapping and must not be stored
+    /// directly. Callers must align against post-change text and then apply
+    /// exactly one D10 normalization.
     pub fn map_no_normalize(mut self, changes: &ChangeSet) -> Self {
         if changes.is_empty() {
             return self;
         }
+        let unequal_replacements = UnequalReplacements::new(changes);
 
         let positions_to_map = self.ranges.iter_mut().flat_map(|range| {
             use std::cmp::Ordering;
@@ -484,14 +605,20 @@ impl Selection {
                     (&mut range.anchor, Assoc::AfterSticky),
                     (&mut range.head, Assoc::AfterSticky),
                 ],
-                Ordering::Less => [
-                    (&mut range.anchor, Assoc::AfterSticky),
-                    (&mut range.head, Assoc::BeforeSticky),
-                ],
-                Ordering::Greater => [
-                    (&mut range.head, Assoc::AfterSticky),
-                    (&mut range.anchor, Assoc::BeforeSticky),
-                ],
+                Ordering::Less => {
+                    let lower =
+                        endpoint_assoc(&unequal_replacements, range.anchor, EndpointRole::Lower);
+                    let upper =
+                        endpoint_assoc(&unequal_replacements, range.head, EndpointRole::Upper);
+                    [(&mut range.anchor, lower), (&mut range.head, upper)]
+                }
+                Ordering::Greater => {
+                    let lower =
+                        endpoint_assoc(&unequal_replacements, range.head, EndpointRole::Lower);
+                    let upper =
+                        endpoint_assoc(&unequal_replacements, range.anchor, EndpointRole::Upper);
+                    [(&mut range.head, lower), (&mut range.anchor, upper)]
+                }
             }
         });
         changes.update_positions(positions_to_map);
@@ -550,28 +677,52 @@ impl Selection {
         if self.len() < 2 {
             return self;
         }
-        let mut primary = self.ranges[self.primary_index];
-        self.ranges.sort_unstable_by_key(Range::from);
-
-        self.ranges.dedup_by(|curr_range, prev_range| {
-            if prev_range.overlaps(curr_range) {
-                let new_range = curr_range.merge(*prev_range);
-                if prev_range == &primary || curr_range == &primary {
-                    primary = new_range;
-                }
-                *prev_range = new_range;
-                true
-            } else {
-                false
-            }
+        let mut ranges: Vec<_> = self
+            .ranges
+            .into_iter()
+            .enumerate()
+            .map(|(index, range)| (range, index == self.primary_index))
+            .collect();
+        ranges.sort_unstable_by(|(left, _), (right, _)| {
+            left.from()
+                .cmp(&right.from())
+                .then_with(|| right.to().cmp(&left.to()))
+                .then_with(|| {
+                    matches!(left.direction(), Direction::Backward)
+                        .cmp(&matches!(right.direction(), Direction::Backward))
+                })
         });
 
-        self.primary_index = self
-            .ranges
-            .iter()
-            .position(|&range| range == primary)
-            .unwrap();
+        let mut normalized: SmallVec<[Range; 1]> = SmallVec::new();
+        let mut primary_index = None;
+        let mut index = 0;
+        while index < ranges.len() {
+            let (winner, mut contains_primary) = ranges[index];
+            let mut from = winner.from();
+            let mut to = winner.to();
+            let mut direction = winner.direction();
+            index += 1;
 
+            while index < ranges.len() && Range::new(from, to).overlaps(&ranges[index].0) {
+                let (range, is_primary) = ranges[index];
+                from = from.min(range.from());
+                to = to.max(range.to());
+                if is_primary {
+                    direction = range.direction();
+                }
+                contains_primary |= is_primary;
+                index += 1;
+            }
+
+            let range = Range::new(from, to).with_direction(direction);
+            if contains_primary {
+                primary_index = Some(normalized.len());
+            }
+            normalized.push(range);
+        }
+
+        self.ranges = normalized;
+        self.primary_index = primary_index.expect("the primary range must survive normalization");
         self
     }
 
@@ -608,20 +759,38 @@ impl Selection {
         self
     }
 
+    /// Constructs and normalizes a selection from grapheme-aligned ranges.
     #[must_use]
     pub fn new(ranges: SmallVec<[Range; 1]>, primary_index: usize) -> Self {
         assert!(!ranges.is_empty());
-        debug_assert!(primary_index < ranges.len());
-
-        let selection = Self {
-            ranges,
-            primary_index,
-        };
-
-        selection.normalize()
+        assert!(primary_index < ranges.len());
+        Self::new_unaligned(ranges, primary_index).normalize()
     }
 
-    /// Takes a closure and maps each `Range` over the closure.
+    /// Validates, aligns, and D10-normalizes scalar ranges against `text`.
+    pub fn try_new(
+        ranges: SmallVec<[Range; 1]>,
+        primary_index: usize,
+        text: RopeSlice,
+    ) -> Result<Self, SelectionBoundsError> {
+        Self::new_unaligned(ranges, primary_index).try_ensure_invariants(text)
+    }
+
+    /// Constructs an unnormalized selection for a transaction result.
+    ///
+    /// Ranges must remain distinct until they are aligned against post-change
+    /// text. Callers must align and normalize the result before passing it to
+    /// consumers that assume stored-selection invariants.
+    pub(crate) fn new_unaligned(ranges: SmallVec<[Range; 1]>, primary_index: usize) -> Self {
+        assert!(!ranges.is_empty());
+        assert!(primary_index < ranges.len());
+        Self {
+            ranges,
+            primary_index,
+        }
+    }
+
+    /// Maps each range and normalizes the results.
     pub fn transform<F>(mut self, mut f: F) -> Self
     where
         F: FnMut(Range) -> Range,
@@ -632,7 +801,7 @@ impl Selection {
         self.normalize()
     }
 
-    /// Takes a closure and maps each `Range` over the closure to multiple `Range`s.
+    /// Maps each range to multiple ranges and normalizes the results.
     pub fn transform_iter<F, I>(mut self, f: F) -> Self
     where
         F: FnMut(Range) -> I,
@@ -642,19 +811,46 @@ impl Selection {
         self.normalize()
     }
 
-    // Ensures the selection adheres to the following invariants:
-    // 1. All ranges are grapheme aligned.
-    // 2. Ranges are non-overlapping.
-    // 3. Ranges are sorted by their position in the text.
-    //
-    // Note: With beam cursor semantics, zero-width ranges (cursor only) are valid.
+    /// Ensures the selection adheres to the following invariants:
+    ///
+    /// 1. All ranges are grapheme aligned.
+    /// 2. Ranges are non-overlapping.
+    /// 3. Ranges are sorted by their position in the text.
+    ///
+    /// With beam cursor semantics, zero-width ranges (cursor only) are valid.
+    ///
+    /// # Panics
+    ///
+    /// Panics when an endpoint is beyond EOF. Fallible callers must use
+    /// [`Selection::try_ensure_invariants`] instead.
     pub fn ensure_invariants(self, text: RopeSlice) -> Self {
-        self.transform(|r| r.grapheme_aligned(text)).normalize()
+        self.try_ensure_invariants(text)
+            .expect("selection endpoints must be within document bounds")
+    }
+
+    /// Validates endpoint bounds, aligns graphemes, and applies D10 once.
+    pub fn try_ensure_invariants(mut self, text: RopeSlice) -> Result<Self, SelectionBoundsError> {
+        let len_chars = text.len_chars();
+        for range in &self.ranges {
+            for position in [range.anchor, range.head] {
+                if len_chars < position {
+                    return Err(SelectionBoundsError {
+                        position,
+                        len_chars,
+                    });
+                }
+            }
+        }
+        for range in &mut self.ranges {
+            *range = range.grapheme_aligned(text);
+        }
+        Ok(self.normalize())
     }
 
     /// Transforms the selection into cursor positions (head positions).
     pub fn cursors(self, text: RopeSlice) -> Self {
         self.transform(|range| Range::point(range.cursor(text)))
+            .normalize()
     }
 
     pub fn fragments<'a>(
@@ -869,7 +1065,7 @@ pub fn split_on_matches(text: RopeSlice, selection: &Selection, regex: &rope::Re
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::Rope;
+    use crate::{Rope, Tendril, Transaction};
 
     #[test]
     #[should_panic]
@@ -891,7 +1087,8 @@ mod test {
                 Range::new(13, 14),
             ],
             0,
-        );
+        )
+        .normalize();
 
         let res = sel
             .ranges
@@ -906,7 +1103,8 @@ mod test {
         let sel = Selection::new(
             smallvec![Range::new(0, 2), Range::new(1, 5), Range::new(4, 7)],
             2,
-        );
+        )
+        .normalize();
 
         let res = sel
             .ranges
@@ -930,7 +1128,8 @@ mod test {
                 Range::new(8, 10),
             ],
             0,
-        );
+        )
+        .normalize();
 
         let res = sel
             .ranges
@@ -1497,6 +1696,750 @@ mod test {
         assert!(
             backward_range.head < backward_range.anchor,
             "Backward direction should be preserved after ensure_invariants"
+        );
+    }
+
+    #[test]
+    fn validation_rejects_out_of_bounds_without_clamping() {
+        let text = Rope::from("abc");
+        let error = Selection::single(0, 4)
+            .try_ensure_invariants(text.slice(..))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            SelectionBoundsError {
+                position: 4,
+                len_chars: 3
+            }
+        );
+    }
+
+    #[test]
+    fn construction_preserves_participants_until_grapheme_alignment() {
+        let text = Rope::from("a\u{301}b");
+        let selection = Selection::new_unaligned(smallvec![Range::point(0), Range::new(1, 2)], 1);
+        assert_eq!(selection.ranges(), &[Range::point(0), Range::new(1, 2)]);
+
+        let normalized = selection.ensure_invariants(text.slice(..));
+        assert_eq!(normalized.ranges(), &[Range::new(0, 2)]);
+        assert_eq!(normalized.primary_index(), 0);
+    }
+
+    #[test]
+    fn grapheme_alignment_covers_points_ranges_crlf_and_eof() {
+        let text = Rope::from("a\u{301}\r\n🙂");
+        let slice = text.slice(..);
+        for (input, expected) in [
+            (Range::point(1), Range::point(0)),
+            (Range::new(1, 2), Range::new(0, 2)),
+            (Range::new(2, 3), Range::new(2, 4)),
+            (Range::new(3, 2), Range::new(4, 2)),
+            (Range::point(5), Range::point(5)),
+        ] {
+            assert_eq!(input.grapheme_aligned(slice), expected);
+        }
+    }
+
+    #[test]
+    fn d10_normalization_is_permutation_independent() {
+        let primary = Range::new(7, 2);
+        let ranges = [primary, Range::new(1, 4), Range::new(6, 9)];
+        for permutation in [
+            [ranges[0], ranges[1], ranges[2]],
+            [ranges[0], ranges[2], ranges[1]],
+            [ranges[1], ranges[0], ranges[2]],
+            [ranges[1], ranges[2], ranges[0]],
+            [ranges[2], ranges[0], ranges[1]],
+            [ranges[2], ranges[1], ranges[0]],
+        ] {
+            let primary_index = permutation
+                .iter()
+                .position(|&range| range == primary)
+                .unwrap();
+            let selection =
+                Selection::new(permutation.into_iter().collect(), primary_index).normalize();
+            assert_eq!(selection.ranges(), &[Range::new(9, 1)]);
+            assert_eq!(selection.primary_index(), 0);
+        }
+    }
+
+    #[test]
+    fn d10_secondary_merge_uses_deterministic_winner() {
+        let selection = Selection::new(
+            smallvec![
+                Range::point(20),
+                Range::new(5, 2),
+                Range::new(1, 4),
+                Range::new(3, 6)
+            ],
+            0,
+        )
+        .normalize();
+        assert_eq!(selection.ranges(), &[Range::new(1, 6), Range::point(20)]);
+        assert_eq!(selection.primary_index(), 1);
+    }
+
+    #[test]
+    fn d10_secondary_ties_choose_widest_then_forward() {
+        let widest = Selection::new(
+            smallvec![
+                Range::point(20),
+                Range::new(4, 1),
+                Range::new(6, 1),
+                Range::new(2, 5)
+            ],
+            0,
+        )
+        .normalize();
+        assert_eq!(widest.ranges()[0], Range::new(6, 1));
+
+        let forward = Selection::new(
+            smallvec![Range::point(20), Range::new(5, 1), Range::new(1, 5)],
+            0,
+        )
+        .normalize();
+        assert_eq!(forward.ranges()[0], Range::new(1, 5));
+    }
+
+    #[test]
+    fn mapping_applies_scalar_align_and_d10_phases_in_order() {
+        struct MappingCase {
+            name: &'static str,
+            range: Range,
+            change: (usize, usize, Option<Tendril>),
+            scalar: Range,
+            aligned: Range,
+            final_range: Range,
+        }
+
+        fn phases(
+            source: &str,
+            range: Range,
+            change: (usize, usize, Option<Tendril>),
+        ) -> (Range, Range, Range) {
+            let old_text = Rope::from(source);
+            let transaction = Transaction::change(&old_text, std::iter::once(change));
+            let scalar = Selection::from(range)
+                .map_no_normalize(transaction.changes())
+                .primary();
+            let mut new_text = old_text.clone();
+            assert!(transaction.changes().apply(&mut new_text));
+            let aligned = scalar.grapheme_aligned(new_text.slice(..));
+            let final_range = Selection::from(range)
+                .map(transaction.changes(), new_text.slice(..))
+                .primary();
+            (scalar, aligned, final_range)
+        }
+
+        let insert = Some(Tendril::from("X"));
+        let cases = [
+            MappingCase {
+                name: "point insertion strictly before",
+                range: Range::point(1),
+                change: (0, 0, insert.clone()),
+                scalar: Range::point(2),
+                aligned: Range::point(2),
+                final_range: Range::point(2),
+            },
+            MappingCase {
+                name: "point insertion strictly after",
+                range: Range::point(1),
+                change: (2, 2, insert.clone()),
+                scalar: Range::point(1),
+                aligned: Range::point(1),
+                final_range: Range::point(1),
+            },
+            MappingCase {
+                name: "point insertion",
+                range: Range::point(1),
+                change: (1, 1, insert.clone()),
+                scalar: Range::point(2),
+                aligned: Range::point(2),
+                final_range: Range::point(2),
+            },
+            MappingCase {
+                name: "forward lower-boundary insertion",
+                range: Range::new(1, 3),
+                change: (1, 1, insert.clone()),
+                scalar: Range::new(2, 4),
+                aligned: Range::new(2, 4),
+                final_range: Range::new(2, 4),
+            },
+            MappingCase {
+                name: "forward upper-boundary insertion",
+                range: Range::new(1, 3),
+                change: (3, 3, insert.clone()),
+                scalar: Range::new(1, 3),
+                aligned: Range::new(1, 3),
+                final_range: Range::new(1, 3),
+            },
+            MappingCase {
+                name: "backward interior insertion",
+                range: Range::new(3, 1),
+                change: (2, 2, insert.clone()),
+                scalar: Range::new(4, 1),
+                aligned: Range::new(4, 1),
+                final_range: Range::new(4, 1),
+            },
+            MappingCase {
+                name: "forward interior insertion",
+                range: Range::new(1, 3),
+                change: (2, 2, insert.clone()),
+                scalar: Range::new(1, 4),
+                aligned: Range::new(1, 4),
+                final_range: Range::new(1, 4),
+            },
+            MappingCase {
+                name: "backward lower-boundary insertion",
+                range: Range::new(3, 1),
+                change: (1, 1, insert.clone()),
+                scalar: Range::new(4, 2),
+                aligned: Range::new(4, 2),
+                final_range: Range::new(4, 2),
+            },
+            MappingCase {
+                name: "backward upper-boundary insertion",
+                range: Range::new(3, 1),
+                change: (3, 3, insert.clone()),
+                scalar: Range::new(3, 1),
+                aligned: Range::new(3, 1),
+                final_range: Range::new(3, 1),
+            },
+            MappingCase {
+                name: "point deletion",
+                range: Range::point(2),
+                change: (1, 3, None),
+                scalar: Range::point(1),
+                aligned: Range::point(1),
+                final_range: Range::point(1),
+            },
+            MappingCase {
+                name: "point deletion at lower boundary",
+                range: Range::point(1),
+                change: (1, 3, None),
+                scalar: Range::point(1),
+                aligned: Range::point(1),
+                final_range: Range::point(1),
+            },
+            MappingCase {
+                name: "point deletion at upper boundary",
+                range: Range::point(3),
+                change: (1, 3, None),
+                scalar: Range::point(1),
+                aligned: Range::point(1),
+                final_range: Range::point(1),
+            },
+            MappingCase {
+                name: "forward interior deletion",
+                range: Range::new(0, 3),
+                change: (1, 2, None),
+                scalar: Range::new(0, 2),
+                aligned: Range::new(0, 2),
+                final_range: Range::new(0, 2),
+            },
+            MappingCase {
+                name: "backward interior deletion",
+                range: Range::new(3, 0),
+                change: (1, 2, None),
+                scalar: Range::new(2, 0),
+                aligned: Range::new(2, 0),
+                final_range: Range::new(2, 0),
+            },
+            MappingCase {
+                name: "forward lower-boundary deletion",
+                range: Range::new(1, 3),
+                change: (1, 2, None),
+                scalar: Range::new(1, 2),
+                aligned: Range::new(1, 2),
+                final_range: Range::new(1, 2),
+            },
+            MappingCase {
+                name: "backward lower-boundary deletion",
+                range: Range::new(3, 1),
+                change: (1, 2, None),
+                scalar: Range::new(2, 1),
+                aligned: Range::new(2, 1),
+                final_range: Range::new(2, 1),
+            },
+            MappingCase {
+                name: "forward upper-boundary deletion",
+                range: Range::new(1, 3),
+                change: (2, 3, None),
+                scalar: Range::new(1, 2),
+                aligned: Range::new(1, 2),
+                final_range: Range::new(1, 2),
+            },
+            MappingCase {
+                name: "backward upper-boundary deletion",
+                range: Range::new(3, 1),
+                change: (2, 3, None),
+                scalar: Range::new(2, 1),
+                aligned: Range::new(2, 1),
+                final_range: Range::new(2, 1),
+            },
+            MappingCase {
+                name: "point unequal replacement at lower boundary",
+                range: Range::point(1),
+                change: (1, 3, Some(Tendril::from("X"))),
+                scalar: Range::point(1),
+                aligned: Range::point(1),
+                final_range: Range::point(1),
+            },
+            MappingCase {
+                name: "point unequal replacement at upper boundary",
+                range: Range::point(3),
+                change: (1, 3, Some(Tendril::from("X"))),
+                scalar: Range::point(2),
+                aligned: Range::point(2),
+                final_range: Range::point(2),
+            },
+            MappingCase {
+                name: "point unequal replacement in interior",
+                range: Range::point(2),
+                change: (1, 3, Some(Tendril::from("X"))),
+                scalar: Range::point(2),
+                aligned: Range::point(2),
+                final_range: Range::point(2),
+            },
+            MappingCase {
+                name: "forward lower-boundary unequal replacement",
+                range: Range::new(1, 3),
+                change: (1, 2, Some(Tendril::from("XY"))),
+                scalar: Range::new(1, 4),
+                aligned: Range::new(1, 4),
+                final_range: Range::new(1, 4),
+            },
+            MappingCase {
+                name: "backward lower-boundary unequal replacement",
+                range: Range::new(3, 1),
+                change: (1, 2, Some(Tendril::from("XY"))),
+                scalar: Range::new(4, 1),
+                aligned: Range::new(4, 1),
+                final_range: Range::new(4, 1),
+            },
+            MappingCase {
+                name: "forward upper-boundary unequal replacement",
+                range: Range::new(1, 3),
+                change: (2, 3, Some(Tendril::from("XY"))),
+                scalar: Range::new(1, 4),
+                aligned: Range::new(1, 4),
+                final_range: Range::new(1, 4),
+            },
+            MappingCase {
+                name: "backward upper-boundary unequal replacement",
+                range: Range::new(3, 1),
+                change: (2, 3, Some(Tendril::from("XY"))),
+                scalar: Range::new(4, 1),
+                aligned: Range::new(4, 1),
+                final_range: Range::new(4, 1),
+            },
+            MappingCase {
+                name: "forward equal replacement",
+                range: Range::new(1, 3),
+                change: (1, 3, Some(Tendril::from("YZ"))),
+                scalar: Range::new(1, 3),
+                aligned: Range::new(1, 3),
+                final_range: Range::new(1, 3),
+            },
+            MappingCase {
+                name: "backward equal whole-range replacement",
+                range: Range::new(3, 1),
+                change: (1, 3, Some(Tendril::from("YZ"))),
+                scalar: Range::new(3, 1),
+                aligned: Range::new(3, 1),
+                final_range: Range::new(3, 1),
+            },
+            MappingCase {
+                name: "point before equal replacement",
+                range: Range::point(0),
+                change: (1, 3, Some(Tendril::from("YZ"))),
+                scalar: Range::point(0),
+                aligned: Range::point(0),
+                final_range: Range::point(0),
+            },
+            MappingCase {
+                name: "point inside equal replacement",
+                range: Range::point(2),
+                change: (1, 3, Some(Tendril::from("YZ"))),
+                scalar: Range::point(2),
+                aligned: Range::point(2),
+                final_range: Range::point(2),
+            },
+            MappingCase {
+                name: "point after equal replacement",
+                range: Range::point(4),
+                change: (1, 3, Some(Tendril::from("YZ"))),
+                scalar: Range::point(4),
+                aligned: Range::point(4),
+                final_range: Range::point(4),
+            },
+            MappingCase {
+                name: "backward unequal replacement",
+                range: Range::new(3, 1),
+                change: (1, 3, Some(Tendril::from("Z"))),
+                scalar: Range::new(2, 1),
+                aligned: Range::new(2, 1),
+                final_range: Range::new(2, 1),
+            },
+            MappingCase {
+                name: "backward whole-range deletion",
+                range: Range::new(3, 1),
+                change: (1, 3, None),
+                scalar: Range::point(1),
+                aligned: Range::point(1),
+                final_range: Range::point(1),
+            },
+            MappingCase {
+                name: "forward whole-range deletion",
+                range: Range::new(1, 3),
+                change: (1, 3, None),
+                scalar: Range::point(1),
+                aligned: Range::point(1),
+                final_range: Range::point(1),
+            },
+        ];
+        for case in cases {
+            let (scalar, aligned, final_range) = phases("abcd", case.range, case.change);
+            assert_eq!(scalar, case.scalar, "{} scalar", case.name);
+            assert_eq!(aligned, case.aligned, "{} aligned", case.name);
+            assert_eq!(final_range, case.final_range, "{} final", case.name);
+        }
+    }
+
+    #[test]
+    fn unequal_replacement_maps_interior_endpoints_by_bound_role() {
+        fn assert_phases(range: Range, replacement: &str, expected: Range) {
+            let old_text = Rope::from("abcdef");
+            let transaction = Transaction::change(
+                &old_text,
+                std::iter::once((1, 5, Some(Tendril::from(replacement)))),
+            );
+            let scalar_selection = Selection::from(range).map_no_normalize(transaction.changes());
+            assert_eq!(scalar_selection.primary(), expected);
+
+            let mut new_text = old_text.clone();
+            assert!(transaction.changes().apply(&mut new_text));
+            assert_eq!(
+                scalar_selection
+                    .primary()
+                    .grapheme_aligned(new_text.slice(..)),
+                expected
+            );
+            assert_eq!(
+                Selection::from(range)
+                    .map(transaction.changes(), new_text.slice(..))
+                    .primary(),
+                expected
+            );
+        }
+
+        for (range, expected) in [
+            (Range::new(2, 6), Range::new(1, 3)),
+            (Range::new(6, 2), Range::new(3, 1)),
+            (Range::new(0, 4), Range::new(0, 2)),
+            (Range::new(4, 0), Range::new(2, 0)),
+            (Range::new(2, 4), Range::new(1, 2)),
+            (Range::new(4, 2), Range::new(2, 1)),
+        ] {
+            assert_phases(range, "X", expected);
+        }
+
+        for range in [Range::new(2, 4), Range::new(4, 2)] {
+            assert_phases(range, "WXYZ", range);
+        }
+    }
+
+    #[test]
+    fn mapping_realigns_after_grapheme_segmentation_changes() {
+        struct SegmentationCase {
+            name: &'static str,
+            source: &'static str,
+            range: Range,
+            inserted: &'static str,
+            scalar: Range,
+            aligned: Range,
+        }
+
+        let cases = [
+            SegmentationCase {
+                name: "combining mark joins left at upper edge",
+                source: "ab",
+                range: Range::new(0, 1),
+                inserted: "\u{301}",
+                scalar: Range::new(0, 1),
+                aligned: Range::new(0, 2),
+            },
+            SegmentationCase {
+                name: "variation selector joins left at upper edge",
+                source: "❤x",
+                range: Range::new(0, 1),
+                inserted: "\u{fe0f}",
+                scalar: Range::new(0, 1),
+                aligned: Range::new(0, 2),
+            },
+            SegmentationCase {
+                name: "ZWJ joins across lower edge",
+                source: "👩💻",
+                range: Range::new(1, 2),
+                inserted: "\u{200d}",
+                scalar: Range::new(2, 3),
+                aligned: Range::new(0, 3),
+            },
+            SegmentationCase {
+                name: "ZWJ joins across upper edge",
+                source: "👩💻",
+                range: Range::new(0, 1),
+                inserted: "\u{200d}",
+                scalar: Range::new(0, 1),
+                aligned: Range::new(0, 3),
+            },
+            SegmentationCase {
+                name: "combining mark joins left at lower edge",
+                source: "ab",
+                range: Range::new(1, 2),
+                inserted: "\u{301}",
+                scalar: Range::new(2, 3),
+                aligned: Range::new(2, 3),
+            },
+            SegmentationCase {
+                name: "variation selector joins left at lower edge",
+                source: "❤x",
+                range: Range::new(1, 2),
+                inserted: "\u{fe0f}",
+                scalar: Range::new(2, 3),
+                aligned: Range::new(2, 3),
+            },
+            SegmentationCase {
+                name: "combining sequence does not join at upper edge",
+                source: "ab",
+                range: Range::new(0, 1),
+                inserted: "X\u{301}",
+                scalar: Range::new(0, 1),
+                aligned: Range::new(0, 1),
+            },
+            SegmentationCase {
+                name: "combining sequence does not join at lower edge",
+                source: "ab",
+                range: Range::new(1, 2),
+                inserted: "X\u{301}",
+                scalar: Range::new(3, 4),
+                aligned: Range::new(3, 4),
+            },
+            SegmentationCase {
+                name: "variation-selector sequence does not join at upper edge",
+                source: "ab",
+                range: Range::new(0, 1),
+                inserted: "X\u{fe0f}",
+                scalar: Range::new(0, 1),
+                aligned: Range::new(0, 1),
+            },
+            SegmentationCase {
+                name: "variation-selector sequence does not join at lower edge",
+                source: "ab",
+                range: Range::new(1, 2),
+                inserted: "X\u{fe0f}",
+                scalar: Range::new(3, 4),
+                aligned: Range::new(3, 4),
+            },
+            SegmentationCase {
+                name: "ZWJ sequence does not join at upper edge",
+                source: "ab",
+                range: Range::new(0, 1),
+                inserted: "X\u{200d}",
+                scalar: Range::new(0, 1),
+                aligned: Range::new(0, 1),
+            },
+            SegmentationCase {
+                name: "ZWJ sequence does not join at lower edge",
+                source: "ab",
+                range: Range::new(1, 2),
+                inserted: "X\u{200d}",
+                scalar: Range::new(3, 4),
+                aligned: Range::new(3, 4),
+            },
+            SegmentationCase {
+                name: "upper-edge insertion does not join",
+                source: "ab",
+                range: Range::new(0, 1),
+                inserted: "X",
+                scalar: Range::new(0, 1),
+                aligned: Range::new(0, 1),
+            },
+            SegmentationCase {
+                name: "lower-edge insertion does not join",
+                source: "ab",
+                range: Range::new(1, 2),
+                inserted: "X",
+                scalar: Range::new(2, 3),
+                aligned: Range::new(2, 3),
+            },
+        ];
+        for case in cases {
+            let old_text = Rope::from(case.source);
+            let transaction = Transaction::change(
+                &old_text,
+                std::iter::once((1, 1, Some(Tendril::from(case.inserted)))),
+            );
+            let scalar = Selection::from(case.range)
+                .map_no_normalize(transaction.changes())
+                .primary();
+            let mut new_text = old_text.clone();
+            assert!(transaction.changes().apply(&mut new_text));
+            let aligned = scalar.grapheme_aligned(new_text.slice(..));
+            assert_eq!(scalar, case.scalar, "{} scalar", case.name);
+            assert_eq!(aligned, case.aligned, "{} aligned", case.name);
+            assert_eq!(
+                Selection::from(case.range)
+                    .map(transaction.changes(), new_text.slice(..))
+                    .primary(),
+                case.aligned,
+                "{} final",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn mapping_collisions_preserve_primary_and_collapse_forward() {
+        let old_text = Rope::from("abcdef");
+        let transaction = Transaction::change(&old_text, std::iter::once((1, 4, None)));
+        let selection = Selection::new(
+            smallvec![Range::new(1, 2), Range::new(4, 3), Range::point(6)],
+            1,
+        );
+        let mut new_text = old_text.clone();
+        assert!(transaction.changes().apply(&mut new_text));
+
+        let scalar = selection.clone().map_no_normalize(transaction.changes());
+        assert_eq!(
+            scalar.ranges(),
+            &[Range::point(1), Range::point(1), Range::point(3)]
+        );
+        let mapped = selection.map(transaction.changes(), new_text.slice(..));
+        assert_eq!(mapped.ranges(), &[Range::point(1), Range::point(3)]);
+        assert_eq!(mapped.primary_index(), 0);
+        assert_eq!(mapped.primary().direction(), Direction::Forward);
+    }
+
+    #[test]
+    fn mapping_collision_primary_is_permutation_independent() {
+        let old_text = Rope::from("abcdef");
+        let transaction = Transaction::change(&old_text, std::iter::once((1, 4, None)));
+        let primary = Range::point(2);
+        let ranges = [Range::point(1), primary, Range::point(4)];
+        let mut new_text = old_text.clone();
+        assert!(transaction.changes().apply(&mut new_text));
+
+        for permutation in [
+            [ranges[0], ranges[1], ranges[2]],
+            [ranges[0], ranges[2], ranges[1]],
+            [ranges[1], ranges[0], ranges[2]],
+            [ranges[1], ranges[2], ranges[0]],
+            [ranges[2], ranges[0], ranges[1]],
+            [ranges[2], ranges[1], ranges[0]],
+        ] {
+            let primary_index = permutation
+                .iter()
+                .position(|&range| range == primary)
+                .unwrap();
+            let mapped = Selection::new_unaligned(permutation.into_iter().collect(), primary_index)
+                .map(transaction.changes(), new_text.slice(..));
+            assert_eq!(mapped.ranges(), &[Range::point(1)]);
+            assert_eq!(mapped.primary_index(), 0);
+        }
+    }
+
+    #[test]
+    fn mapping_secondary_collision_preserves_separate_primary() {
+        let old_text = Rope::from("abcdef");
+        let transaction = Transaction::change(&old_text, std::iter::once((1, 4, None)));
+        let primary = Range::point(6);
+        let secondary = [Range::point(1), Range::point(2), Range::point(4)];
+        let mut new_text = old_text.clone();
+        assert!(transaction.changes().apply(&mut new_text));
+
+        for permutation in [
+            [secondary[0], secondary[1], secondary[2]],
+            [secondary[0], secondary[2], secondary[1]],
+            [secondary[1], secondary[0], secondary[2]],
+            [secondary[1], secondary[2], secondary[0]],
+            [secondary[2], secondary[0], secondary[1]],
+            [secondary[2], secondary[1], secondary[0]],
+        ] {
+            let mut ranges: SmallVec<[Range; 1]> = permutation.into_iter().collect();
+            ranges.push(primary);
+            let mapped =
+                Selection::new_unaligned(ranges, 3).map(transaction.changes(), new_text.slice(..));
+            assert_eq!(mapped.ranges(), &[Range::point(1), Range::point(3)]);
+            assert_eq!(mapped.primary_index(), 1);
+        }
+    }
+
+    #[test]
+    fn replacement_realigns_special_grapheme_sequences() {
+        for (name, source, replacement, expected_aligned) in [
+            (
+                "combining replacement joins left",
+                "ab",
+                "\u{301}",
+                Range::new(0, 2),
+            ),
+            (
+                "ZWJ replacement joins left and right",
+                "👩x",
+                "\u{200d}💻",
+                Range::new(0, 3),
+            ),
+            (
+                "variation-selector replacement joins left",
+                "❤x",
+                "\u{fe0f}x",
+                Range::new(0, 2),
+            ),
+        ] {
+            let old_text = Rope::from(source);
+            let transaction = Transaction::change(
+                &old_text,
+                std::iter::once((1, 2, Some(Tendril::from(replacement)))),
+            );
+            let scalar = Selection::from(Range::new(0, 1))
+                .map_no_normalize(transaction.changes())
+                .primary();
+            assert_eq!(scalar, Range::new(0, 1), "{name} scalar");
+            let mut new_text = old_text.clone();
+            assert!(transaction.changes().apply(&mut new_text));
+            assert_eq!(
+                scalar.grapheme_aligned(new_text.slice(..)),
+                expected_aligned,
+                "{name} aligned"
+            );
+            assert_eq!(
+                Selection::from(Range::new(0, 1))
+                    .map(transaction.changes(), new_text.slice(..))
+                    .primary(),
+                expected_aligned,
+                "{name} final"
+            );
+        }
+    }
+
+    #[test]
+    fn affinity_helpers_are_total_and_right_first() {
+        let text = Rope::from("ab");
+        assert_eq!(char_at_edge(text.slice(..), 0), Ok(Some('a')));
+        assert_eq!(char_at_edge(text.slice(..), 2), Ok(None));
+        assert!(char_at_edge(text.slice(..), 3).is_err());
+        assert_eq!(
+            adjacent_char_positions(text.slice(..), 1)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![1, 0]
+        );
+        assert_eq!(
+            adjacent_char_positions(text.slice(..), 2)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![1]
         );
     }
 }

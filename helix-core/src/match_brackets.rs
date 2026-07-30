@@ -59,6 +59,25 @@ pub fn find_matching_bracket(syntax: &Syntax, doc: RopeSlice, pos: usize) -> Opt
     find_pair(syntax, doc, pos, false)
 }
 
+/// Finds a bracket adjacent to an edge, checking right before left.
+///
+/// This is the brace-specific D8 exception to ordinary right-affinity lookup.
+#[must_use]
+pub fn find_matching_bracket_at_edge(
+    syntax: Option<&Syntax>,
+    doc: RopeSlice,
+    edge: usize,
+) -> Option<usize> {
+    crate::selection::adjacent_char_positions(doc, edge)
+        .ok()?
+        .find_map(|pos| {
+            syntax.map_or_else(
+                || find_matching_bracket_plaintext(doc, pos),
+                |syntax| find_matching_bracket(syntax, doc, pos),
+            )
+        })
+}
+
 // Returns the position of the bracket that is closing the current scope.
 //
 // If the cursor is on an opening or closing bracket, the function
@@ -321,6 +340,15 @@ mod tests {
     fn find_matching_bracket_empty_file() {
         let actual = find_matching_bracket_plaintext("".into(), 0);
         assert_eq!(actual, None);
+    }
+
+    #[test]
+    fn adjacent_edge_lookup_checks_right_then_left_and_accepts_eof() {
+        let text: RopeSlice = "()".into();
+        assert_eq!(find_matching_bracket_at_edge(None, text, 0), Some(1));
+        assert_eq!(find_matching_bracket_at_edge(None, text, 1), Some(0));
+        assert_eq!(find_matching_bracket_at_edge(None, text, 2), Some(0));
+        assert_eq!(find_matching_bracket_at_edge(None, text, 3), None);
     }
 
     #[test]

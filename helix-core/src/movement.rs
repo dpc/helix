@@ -211,6 +211,10 @@ pub fn move_prev_sub_word_end(slice: RopeSlice, range: Range, count: usize) -> R
 }
 
 fn word_move(slice: RopeSlice, range: Range, count: usize, target: WordMotionTarget) -> Range {
+    if count == 0 {
+        return range;
+    }
+
     let is_prev = matches!(
         target,
         WordMotionTarget::PrevWordStart
@@ -579,7 +583,7 @@ pub fn goto_treesitter_object(
         let len = slice.len_bytes();
         let start_byte = node.start_byte();
         let end_byte = node.end_byte();
-        if start_byte >= len || end_byte >= len {
+        if !treesitter_object_range_is_valid(len, start_byte, end_byte) {
             return None;
         }
 
@@ -597,6 +601,10 @@ pub fn goto_treesitter_object(
         }
     }
     last_range
+}
+
+fn treesitter_object_range_is_valid(text_len: usize, start_byte: usize, end_byte: usize) -> bool {
+    start_byte <= text_len && end_byte <= text_len
 }
 
 fn find_parent_start<'tree>(node: &Node<'tree>) -> Option<Node<'tree>> {
@@ -633,7 +641,7 @@ pub fn move_parent_node_end(
             }
         };
 
-        let mut end_head = match dir {
+        let end_head = match dir {
             // moving forward, we always want to move one past the end of the
             // current node, so use the end byte of the current node, which is an exclusive
             // end of the range
@@ -655,23 +663,35 @@ pub fn move_parent_node_end(
             }
         };
 
-        if movement == Movement::Move {
-            // preserve direction of original range
-            if range.direction() == Direction::Forward {
-                Range::new(end_head, end_head + 1)
-            } else {
-                Range::new(end_head + 1, end_head)
-            }
-        } else {
-            // if we end up with a forward range, then adjust it to be one past
-            // where we want
-            if end_head >= range.anchor {
-                end_head += 1;
-            }
-
-            Range::new(range.anchor, end_head)
-        }
+        parent_node_end_range(range, end_head, text.len_chars(), movement)
     })
+}
+
+fn parent_node_end_range(
+    range: Range,
+    mut end_head: usize,
+    text_len: usize,
+    movement: Movement,
+) -> Range {
+    if movement == Movement::Move {
+        if end_head == text_len {
+            return Range::point(end_head);
+        }
+        // preserve direction of original range
+        if range.direction() == Direction::Forward {
+            Range::new(end_head, end_head + 1)
+        } else {
+            Range::new(end_head + 1, end_head)
+        }
+    } else {
+        // Keep the legacy inclusive adjustment away from EOF until Stage 2
+        // converts this command's broad motion semantics.
+        if range.anchor <= end_head && end_head < text_len {
+            end_head += 1;
+        }
+
+        Range::new(range.anchor, end_head)
+    }
 }
 
 #[cfg(test)]
@@ -968,6 +988,39 @@ mod test {
     #[should_panic]
     fn nonsensical_ranges_panic_on_backwards_movement_attempt_in_debug_mode() {
         move_prev_word_start(Rope::from("Sample").slice(..), Range::point(99999999), 1);
+    }
+
+    #[test]
+    fn zero_count_word_motions_are_identity() {
+        let text = Rope::from("one two");
+        for range in [Range::new(1, 6), Range::new(6, 1), Range::point(4)] {
+            assert_eq!(move_next_word_start(text.slice(..), range, 0), range);
+            assert_eq!(move_next_word_end(text.slice(..), range, 0), range);
+            assert_eq!(move_prev_word_start(text.slice(..), range, 0), range);
+            assert_eq!(move_prev_word_end(text.slice(..), range, 0), range);
+        }
+    }
+
+    #[test]
+    fn parent_node_exclusive_eof_end_stays_in_bounds() {
+        let eof = 6;
+        for input in [Range::point(3), Range::new(2, 4), Range::new(5, 3)] {
+            assert_eq!(
+                parent_node_end_range(input, eof, eof, Movement::Extend),
+                Range::new(input.anchor, eof)
+            );
+        }
+        assert_eq!(
+            parent_node_end_range(Range::new(2, 4), eof, eof, Movement::Move),
+            Range::point(eof)
+        );
+    }
+
+    #[test]
+    fn treesitter_object_accepts_exclusive_eof_end() {
+        assert!(treesitter_object_range_is_valid(6, 2, 6));
+        assert!(treesitter_object_range_is_valid(6, 6, 6));
+        assert!(!treesitter_object_range_is_valid(6, 2, 7));
     }
 
     #[test]

@@ -351,7 +351,7 @@ pub mod util {
         .expect("transaction must be valid for primary selection");
         let removed_text = text.slice(removed_start..removed_end);
 
-        let (transaction, mut selection) = Transaction::change_by_selection_ignore_overlapping(
+        let (transaction, selection) = Transaction::change_by_selection_ignore_overlapping(
             doc,
             selection,
             |range| {
@@ -365,7 +365,7 @@ pub mod util {
         if transaction.changes().is_empty() {
             return transaction;
         }
-        selection = selection.map(transaction.changes());
+        let selection = selection.map_no_normalize(transaction.changes());
         transaction.with_selection(selection)
     }
 

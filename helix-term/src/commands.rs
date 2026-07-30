@@ -1,4 +1,6 @@
 pub(crate) mod dap;
+#[cfg(test)]
+mod edge_endpoint_tests;
 pub(crate) mod lsp;
 pub(crate) mod syntax;
 pub(crate) mod typed;
@@ -906,7 +908,7 @@ fn goto_line_end_newline_impl(view: &mut View, doc: &mut Document, movement: Mov
         let line = range.cursor_line(text);
         // `line_to_char` returns the edge after the complete line ending when
         // one exists, and EOF for an unterminated final line.
-        let pos = text.line_to_char(line + 1);
+        let pos = line_end_newline_position(text, line);
 
         if movement == Movement::Extend {
             range.put_cursor(text, pos, true)
@@ -915,6 +917,10 @@ fn goto_line_end_newline_impl(view: &mut View, doc: &mut Document, movement: Mov
         }
     });
     doc.set_selection(view.id, selection);
+}
+
+fn line_end_newline_position(text: RopeSlice, line: usize) -> usize {
+    text.line_to_char(line + 1)
 }
 
 fn goto_line_end_newline(cx: &mut Context) {
@@ -4372,38 +4378,6 @@ fn hunk_range(hunk: Hunk, text: RopeSlice) -> Range {
     let head = text.line_to_char(hunk.after.end as usize);
 
     Range::new(anchor, head)
-}
-
-#[cfg(test)]
-mod edge_endpoint_tests {
-    use super::*;
-
-    #[test]
-    fn line_end_newline_position_stays_within_document() {
-        for (source, line, expected) in [
-            ("abc\n", 0, 4),
-            ("abc\r\n", 0, 5),
-            ("abc", 0, 3),
-            ("abc\nlast", 1, 8),
-        ] {
-            let text = Rope::from(source);
-            assert_eq!(text.slice(..).line_to_char(line + 1), expected);
-            assert!(expected <= text.len_chars());
-        }
-    }
-
-    #[test]
-    fn empty_hunks_are_points_at_their_anchor() {
-        let text = Rope::from("first\nmiddle\nlast");
-
-        for (line, expected) in [(0, 0), (1, 6), (3, 17)] {
-            let hunk = Hunk {
-                before: line..line + 1,
-                after: line..line,
-            };
-            assert_eq!(hunk_range(hunk, text.slice(..)), Range::point(expected));
-        }
-    }
 }
 
 pub mod insert {

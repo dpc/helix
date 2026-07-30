@@ -126,10 +126,7 @@ impl JumpList {
 
         for (doc_id, selection) in &mut self.jumps {
             if doc.id() == *doc_id {
-                *selection = selection
-                    .clone()
-                    .map(transaction.changes())
-                    .ensure_invariants(text);
+                *selection = selection.clone().map(transaction.changes(), text);
             }
         }
     }

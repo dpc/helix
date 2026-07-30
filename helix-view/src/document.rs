@@ -1482,25 +1482,38 @@ impl Document {
     }
 
     /// Select text within the [`Document`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when an endpoint is beyond the document's EOF edge. External
+    /// conversions must call [`Document::try_set_selection`] instead.
     pub fn set_selection(&mut self, view_id: ViewId, selection: Selection) {
+        self.try_set_selection(view_id, selection)
+            .expect("internal selections must use valid document edges");
+    }
+
+    /// Selects text when every endpoint is valid for the document.
+    ///
+    /// Invalid input leaves the current selection unchanged.
+    pub fn try_set_selection(
+        &mut self,
+        view_id: ViewId,
+        selection: Selection,
+    ) -> Result<(), helix_core::selection::SelectionBoundsError> {
         // TODO: use a transaction?
-        self.selections
-            .insert(view_id, selection.ensure_invariants(self.text().slice(..)));
+        let selection = selection.try_ensure_invariants(self.text().slice(..))?;
+        self.selections.insert(view_id, selection);
         helix_event::dispatch(SelectionDidChange {
             doc: self,
             view: view_id,
-        })
+        });
+        Ok(())
     }
 
     /// Find the origin selection of the text in a document, i.e. where
-    /// a single cursor would go if it were on the first grapheme. If
-    /// the text is empty, returns (0, 0).
+    /// a single cursor goes at the document's BOF edge.
     pub fn origin(&self) -> Range {
-        if self.text().len_chars() == 0 {
-            return Range::new(0, 0);
-        }
-
-        Range::new(0, 1).grapheme_aligned(self.text().slice(..))
+        Range::point(0)
     }
 
     /// Reset the view's selection on this document to the
@@ -1559,14 +1572,7 @@ impl Document {
 
         if changes.is_empty() {
             if let Some(selection) = transaction.selection() {
-                self.selections.insert(
-                    view_id,
-                    selection.clone().ensure_invariants(self.text.slice(..)),
-                );
-                helix_event::dispatch(SelectionDidChange {
-                    doc: self,
-                    view: view_id,
-                });
+                self.set_selection(view_id, selection.clone());
             }
             return true;
         }
@@ -1578,9 +1584,7 @@ impl Document {
             *selection = selection
                 .clone()
                 // Map through changes
-                .map(transaction.changes())
-                // Ensure all selections across all views still adhere to invariants.
-                .ensure_invariants(self.text.slice(..));
+                .map(transaction.changes(), self.text.slice(..));
         }
 
         for view_data in self.view_data.values_mut() {
@@ -1723,14 +1727,7 @@ impl Document {
 
         // if specified, the current selection should instead be replaced by transaction.selection
         if let Some(selection) = transaction.selection() {
-            self.selections.insert(
-                view_id,
-                selection.clone().ensure_invariants(self.text.slice(..)),
-            );
-            helix_event::dispatch(SelectionDidChange {
-                doc: self,
-                view: view_id,
-            });
+            self.set_selection(view_id, selection.clone());
         }
 
         true
@@ -2725,6 +2722,33 @@ mod test {
     use arc_swap::ArcSwap;
 
     use super::*;
+
+    fn test_document(text: &str) -> Document {
+        Document::from(
+            Rope::from(text),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        )
+    }
+
+    #[test]
+    fn document_origin_is_always_a_point() {
+        assert_eq!(test_document("").origin(), Range::point(0));
+        assert_eq!(test_document("abc").origin(), Range::point(0));
+        assert_eq!(test_document("\r\n").origin(), Range::point(0));
+    }
+
+    #[test]
+    fn invalid_selection_is_rejected_without_changing_storage() {
+        let mut doc = test_document("abc");
+        let view = ViewId::default();
+        doc.set_selection(view, Selection::point(1));
+        assert!(doc
+            .try_set_selection(view, Selection::single(0, 4))
+            .is_err());
+        assert_eq!(doc.selection(view), &Selection::point(1));
+    }
 
     #[test]
     fn changeset_to_changes_ignore_line_endings() {

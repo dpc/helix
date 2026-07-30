@@ -380,7 +380,7 @@ mod test {
 
             let transaction = toggle_line_comments(&doc, &selection, None);
             transaction.apply(&mut doc);
-            selection = selection.map(transaction.changes());
+            selection = selection.map(transaction.changes(), doc.slice(..));
 
             assert_eq!(doc, "  1\n\n  2\n  3");
             assert!(selection.len() == 1); // to ignore the selection unused warning
@@ -393,7 +393,7 @@ mod test {
 
             let transaction = toggle_line_comments(&doc, &selection, None);
             transaction.apply(&mut doc);
-            selection = selection.map(transaction.changes());
+            selection = selection.map(transaction.changes(), doc.slice(..));
 
             assert_eq!(doc, "  1\n\n  2\n  3");
             assert!(selection.len() == 1); // to ignore the selection unused warning
@@ -406,7 +406,7 @@ mod test {
 
             let transaction = toggle_line_comments(&doc, &selection, None);
             transaction.apply(&mut doc);
-            selection = selection.map(transaction.changes());
+            selection = selection.map(transaction.changes(), doc.slice(..));
             assert_eq!(doc, "");
             assert!(selection.len() == 1); // to ignore the selection unused warning
         }

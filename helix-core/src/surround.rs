@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use ropey::RopeSlice;
+
 use crate::{
     graphemes::next_grapheme_boundary,
     match_brackets::{
@@ -9,7 +11,14 @@ use crate::{
     movement::Direction,
     search, Range, Selection, Syntax,
 };
-use ropey::RopeSlice;
+
+/// Returns surround-discovery candidates adjacent to an edge, right first.
+pub fn adjacent_surround_positions(
+    text: RopeSlice,
+    edge: usize,
+) -> std::result::Result<Vec<usize>, crate::selection::SelectionBoundsError> {
+    Ok(crate::selection::adjacent_char_positions(text, edge)?.collect())
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
