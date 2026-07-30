@@ -44,6 +44,18 @@ pub fn char_at_edge(text: RopeSlice, edge: usize) -> Result<Option<char>, Select
     Ok(text.get_char(edge))
 }
 
+/// Returns the byte range owned by an edge with right affinity.
+///
+/// A non-EOF edge owns the scalar immediately to its right. EOF owns the
+/// natural empty byte range at the end of the document.
+pub fn byte_range_at_edge(
+    text: RopeSlice,
+    edge: usize,
+) -> Result<std::ops::Range<usize>, SelectionBoundsError> {
+    char_at_edge(text, edge)?;
+    Ok(text.char_to_byte(edge)..text.char_to_byte((edge + 1).min(text.len_chars())))
+}
+
 /// Returns adjacency candidates at an edge, checking right before left.
 ///
 /// This helper is reserved for commands such as brace and surround discovery
@@ -2425,10 +2437,13 @@ mod test {
 
     #[test]
     fn affinity_helpers_are_total_and_right_first() {
-        let text = Rope::from("ab");
+        let text = Rope::from("a🦀");
         assert_eq!(char_at_edge(text.slice(..), 0), Ok(Some('a')));
         assert_eq!(char_at_edge(text.slice(..), 2), Ok(None));
         assert!(char_at_edge(text.slice(..), 3).is_err());
+        assert_eq!(byte_range_at_edge(text.slice(..), 0), Ok(0..1));
+        assert_eq!(byte_range_at_edge(text.slice(..), 1), Ok(1..5));
+        assert_eq!(byte_range_at_edge(text.slice(..), 2), Ok(5..5));
         assert_eq!(
             adjacent_char_positions(text.slice(..), 1)
                 .unwrap()

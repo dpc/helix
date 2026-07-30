@@ -1,14 +1,31 @@
 use crate::{movement::Direction, syntax::TreeCursor, Range, RopeSlice, Selection, Syntax};
 
+fn object_byte_range(text: RopeSlice, range: Range) -> Option<std::ops::Range<u32>> {
+    let range = if range.is_empty() {
+        let range = crate::selection::byte_range_at_edge(text, range.head).ok()?;
+        if range.is_empty() {
+            return None;
+        }
+        range
+    } else {
+        let (from, to) = range.into_byte_range(text);
+        from..to
+    };
+    Some(range.start as u32..range.end as u32)
+}
+
 pub fn expand_selection(syntax: &Syntax, text: RopeSlice, selection: Selection) -> Selection {
     let cursor = &mut syntax.walk();
 
     selection.transform(|range| {
         let from = text.char_to_byte(range.from()) as u32;
         let to = text.char_to_byte(range.to()) as u32;
+        let Some(lookup_range) = object_byte_range(text, range) else {
+            return range;
+        };
 
         let byte_range = from..to;
-        cursor.reset_to_byte_range(from, to);
+        cursor.reset_to_byte_range(lookup_range.start, lookup_range.end);
 
         while cursor.node().byte_range() == byte_range {
             if !cursor.goto_parent() {
@@ -55,8 +72,10 @@ pub fn select_next_sibling(syntax: &Syntax, text: RopeSlice, selection: Selectio
 pub fn select_all_siblings(syntax: &Syntax, text: RopeSlice, selection: Selection) -> Selection {
     let mut cursor = syntax.walk();
     selection.transform_iter(move |range| {
-        let (from, to) = range.into_byte_range(text);
-        cursor.reset_to_byte_range(from as u32, to as u32);
+        let Some(byte_range) = object_byte_range(text, range) else {
+            return vec![range].into_iter();
+        };
+        cursor.reset_to_byte_range(byte_range.start, byte_range.end);
 
         if !cursor.goto_parent_with(|parent| parent.child_count() > 1) {
             return vec![range].into_iter();
@@ -69,8 +88,10 @@ pub fn select_all_siblings(syntax: &Syntax, text: RopeSlice, selection: Selectio
 pub fn select_all_children(syntax: &Syntax, text: RopeSlice, selection: Selection) -> Selection {
     let mut cursor = syntax.walk();
     selection.transform_iter(move |range| {
-        let (from, to) = range.into_byte_range(text);
-        cursor.reset_to_byte_range(from as u32, to as u32);
+        let Some(byte_range) = object_byte_range(text, range) else {
+            return vec![range].into_iter();
+        };
+        cursor.reset_to_byte_range(byte_range.start, byte_range.end);
         select_children(&mut cursor, text, range).into_iter()
     })
 }
@@ -118,10 +139,11 @@ where
     let cursor = &mut syntax.walk();
 
     selection.transform(|range| {
-        let from = text.char_to_byte(range.from()) as u32;
-        let to = text.char_to_byte(range.to()) as u32;
+        let Some(byte_range) = object_byte_range(text, range) else {
+            return range;
+        };
 
-        cursor.reset_to_byte_range(from, to);
+        cursor.reset_to_byte_range(byte_range.start, byte_range.end);
 
         motion(cursor);
 

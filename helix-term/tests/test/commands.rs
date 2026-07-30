@@ -121,9 +121,12 @@ async fn test_selection_duplication() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Stage 4: goto-file adjacent-path discovery requires the D8 object-affinity migration"]
 async fn test_goto_file_impl() -> anyhow::Result<()> {
-    let file = tempfile::NamedTempFile::new()?;
+    let dir = tempfile::tempdir()?;
+    let base = dir.path().join("base");
+    for path in ["base", "o", "one.js", "two.js", "one123.js"] {
+        std::fs::write(dir.path().join(path), "")?;
+    }
 
     fn match_paths(app: &Application, matches: Vec<&str>) -> usize {
         app.editor
@@ -135,7 +138,7 @@ async fn test_goto_file_impl() -> anyhow::Result<()> {
 
     // Single selection
     test_key_sequence(
-        &mut AppBuilder::new().with_file(file.path(), None).build()?,
+        &mut AppBuilder::new().with_file(&base, None).build()?,
         Some("ione.js<esc>%gf"),
         Some(&|app| {
             assert_eq!(1, match_paths(app, vec!["one.js"]));
@@ -146,7 +149,7 @@ async fn test_goto_file_impl() -> anyhow::Result<()> {
 
     // Multiple selection
     test_key_sequence(
-        &mut AppBuilder::new().with_file(file.path(), None).build()?,
+        &mut AppBuilder::new().with_file(&base, None).build()?,
         Some("ione.js<ret>two.js<esc>%<A-s>gf"),
         Some(&|app| {
             assert_eq!(2, match_paths(app, vec!["one.js", "two.js"]));
@@ -155,10 +158,84 @@ async fn test_goto_file_impl() -> anyhow::Result<()> {
     )
     .await?;
 
+    // A one-grapheme nonempty selection is an exact path, not an implicit lookup point.
+    test_key_sequence(
+        &mut AppBuilder::new().with_file(&base, None).build()?,
+        Some("ione.js<esc>ghlgf"),
+        Some(&|app| {
+            assert_eq!(1, match_paths(app, vec!["o"]));
+            assert_eq!(0, match_paths(app, vec!["one.js"]));
+        }),
+        false,
+    )
+    .await?;
+
+    for input in [
+        "#[|]#one.js",
+        "one.js#[|]#",
+        "é #[|]#one.js",
+        "one.js#[|]#;",
+    ] {
+        test_key_sequence(
+            &mut AppBuilder::new()
+                .with_file(&base, None)
+                .with_input_text(input)
+                .build()?,
+            Some("gf"),
+            Some(&|app| {
+                assert_eq!(1, match_paths(app, vec!["one.js"]));
+            }),
+            false,
+        )
+        .await?;
+    }
+    test_key_sequence(
+        &mut AppBuilder::new()
+            .with_file(&base, None)
+            .with_input_text("one.js;#[|]#two.js")
+            .build()?,
+        Some("gf"),
+        Some(&|app| {
+            assert_eq!(1, match_paths(app, vec!["two.js"]));
+            assert_eq!(0, match_paths(app, vec!["one.js"]));
+        }),
+        false,
+    )
+    .await?;
+    test_key_sequence(
+        &mut AppBuilder::new()
+            .with_file(&base, None)
+            .with_input_text("one.js'#[|]#two.js")
+            .build()?,
+        Some("gf"),
+        Some(&|app| {
+            assert_eq!(1, match_paths(app, vec!["two.js"]));
+            assert_eq!(0, match_paths(app, vec!["one.js"]));
+        }),
+        false,
+    )
+    .await?;
+    test_key_sequence(
+        &mut AppBuilder::new()
+            .with_file(&base, None)
+            .with_input_text("one.js#[|]#;two.js")
+            .build()?,
+        Some("gf"),
+        Some(&|app| {
+            assert_eq!(1, match_paths(app, vec!["one.js"]));
+            assert_eq!(0, match_paths(app, vec!["two.js"]));
+        }),
+        false,
+    )
+    .await?;
+
     // Cursor on first quote
     test_key_sequence(
-        &mut AppBuilder::new().with_file(file.path(), None).build()?,
-        Some("iimport 'one.js'<esc>B;gf"),
+        &mut AppBuilder::new()
+            .with_file(&base, None)
+            .with_input_text("import #[|]#'one.js'")
+            .build()?,
+        Some("gf"),
         Some(&|app| {
             assert_eq!(1, match_paths(app, vec!["one.js"]));
         }),
@@ -168,8 +245,11 @@ async fn test_goto_file_impl() -> anyhow::Result<()> {
 
     // Cursor on last quote
     test_key_sequence(
-        &mut AppBuilder::new().with_file(file.path(), None).build()?,
-        Some("iimport 'one.js'<esc>bgf"),
+        &mut AppBuilder::new()
+            .with_file(&base, None)
+            .with_input_text("import 'one.js#[|]#'")
+            .build()?,
+        Some("gf"),
         Some(&|app| {
             assert_eq!(1, match_paths(app, vec!["one.js"]));
         }),
@@ -179,8 +259,11 @@ async fn test_goto_file_impl() -> anyhow::Result<()> {
 
     // ';' is behind the path
     test_key_sequence(
-        &mut AppBuilder::new().with_file(file.path(), None).build()?,
-        Some("iimport 'one.js';<esc>B;gf"),
+        &mut AppBuilder::new()
+            .with_file(&base, None)
+            .with_input_text("import 'one.js'#[|]#;")
+            .build()?,
+        Some("gf"),
         Some(&|app| {
             assert_eq!(1, match_paths(app, vec!["one.js"]));
         }),
@@ -190,8 +273,11 @@ async fn test_goto_file_impl() -> anyhow::Result<()> {
 
     // allow numeric values in path
     test_key_sequence(
-        &mut AppBuilder::new().with_file(file.path(), None).build()?,
-        Some("iimport 'one123.js'<esc>B;gf"),
+        &mut AppBuilder::new()
+            .with_file(&base, None)
+            .with_input_text("import '#[|]#one123.js'")
+            .build()?,
+        Some("gf"),
         Some(&|app| {
             assert_eq!(1, match_paths(app, vec!["one123.js"]));
         }),
@@ -976,13 +1062,35 @@ async fn test_toggle_comments_inside_comment_injection() -> anyhow::Result<()> {
     // not fall back to the hardcoded default `#`.
     test((
         indoc! {"\
-            // #[a|]#bc
+            // ab#[|]#c
         "},
         ":lang rust<ret><C-c>",
         indoc! {"\
-            #[a|]#bc
+            ab#[|]#c
         "},
     ))
+    .await?;
+
+    test_key_sequence(
+        &mut AppBuilder::new()
+            .with_file("foo.html", None)
+            .with_input_text("<script>let x = #[|]#1</script>")
+            .build()?,
+        None,
+        Some(&|app| {
+            let loader = app.editor.syn_loader.load();
+            let (view, doc) = helix_view::current_ref!(app.editor);
+            let text = doc.text().slice(..);
+            let edge = doc.selection(view.id).primary().head;
+            let byte = text.char_to_byte(edge);
+            assert_eq!(
+                doc.language_config_at(&loader, byte)
+                    .map(|config| config.language_id.as_str()),
+                Some("javascript")
+            );
+        }),
+        false,
+    )
     .await?;
 
     // A `///` doc comment's text is injected as markdown (no line comment token of
@@ -1028,6 +1136,52 @@ async fn test_toggle_comments_inside_comment_injection() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn tree_sitter_introspection_commands_accept_final_injected_scalars_and_eof(
+) -> anyhow::Result<()> {
+    for (command, expected) in [
+        (":tree-sitter-highlight-name<ret>", "variable"),
+        (":tree-sitter-layers<ret>", "javascript"),
+        (":tree-sitter-subtree<ret>", "identifier"),
+    ] {
+        helix_term::ui::Markdown::take_integration_contents();
+        test_key_sequence(
+            &mut AppBuilder::new()
+                .with_file("foo.html", None)
+                .with_input_text("<script>#[|]#x</script>")
+                .build()?,
+            Some(command),
+            Some(&|_| {
+                let popup_content = helix_term::ui::Markdown::take_integration_contents()
+                    .unwrap_or_else(|| panic!("{command} should create a hover"));
+                assert!(popup_content.contains(expected));
+            }),
+            false,
+        )
+        .await?;
+    }
+    for command in [
+        ":tree-sitter-highlight-name<ret>",
+        ":tree-sitter-layers<ret>",
+        ":tree-sitter-subtree<ret>",
+    ] {
+        helix_term::ui::Markdown::take_integration_contents();
+        test_key_sequence(
+            &mut AppBuilder::new()
+                .with_file("foo.html", None)
+                .with_input_text("<script>x</script>#[|]#")
+                .build()?,
+            Some(command),
+            Some(&|_| {
+                assert!(helix_term::ui::Markdown::take_integration_contents().is_none());
+            }),
+            false,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_read_file() -> anyhow::Result<()> {
     let mut file = tempfile::NamedTempFile::new()?;
     let contents_to_read = "some contents";
@@ -1065,7 +1219,7 @@ async fn surround_replace_ts() -> anyhow::Result<()> {
     const INPUT: &str = r#"\
 fn foo() {
     if let Some(_) = None {
-        testing!("f#[|o]#o)");
+        testing!("f#[|]#oo)");
     }
 }
 "#;
@@ -1075,7 +1229,7 @@ fn foo() {
         r#"\
 fn foo() {
     if let Some(_) = None {
-        testing!('f#[|o]#o)');
+        testing!('f#[|]#oo)');
     }
 }
 "#,
@@ -1088,7 +1242,7 @@ fn foo() {
         r#"\
 fn foo() {
     if let Some(_) = None [
-        testing!("f#[|o]#o)");
+        testing!("f#[|]#oo)");
     ]
 }
 "#,
@@ -1101,7 +1255,7 @@ fn foo() {
         r#"\
 fn foo() {
     if let Some(_) = None {
-        testing!{"f#[|o]#o)"};
+        testing!{"f#[|]#oo)"};
     }
 }
 "#,

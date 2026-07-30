@@ -130,23 +130,22 @@ async fn mode_transitions_preserve_edges_and_collapse_to_heads() -> anyhow::Resu
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Stage 4: surround discovery requires the D8 adjacent-object affinity migration"]
 async fn surround_by_character() -> anyhow::Result<()> {
     // Only pairs matching the passed character count
     test((
-        "(so [many {go#[o|]#d} text] here)",
+        "(so [many {go#[|]#od} text] here)",
         "mi{",
         "(so [many {#[good|]#} text] here)",
     ))
     .await?;
     test((
-        "(so [many {go#[o|]#d} text] here)",
+        "(so [many {go#[|]#od} text] here)",
         "mi[",
         "(so [#[many {good} text|]#] here)",
     ))
     .await?;
     test((
-        "(so [many {go#[o|]#d} text] here)",
+        "(so [many {go#[|]#od} text] here)",
         "mi(",
         "(#[so [many {good} text] here|]#)",
     ))
@@ -154,29 +153,29 @@ async fn surround_by_character() -> anyhow::Result<()> {
 
     // Works with characters that aren't pairs too
     test((
-        "'so 'many 'go#[o|]#d' text' here'",
+        "'so 'many 'go#[|]#od' text' here'",
         "mi'",
         "'so 'many '#[good|]#' text' here'",
     ))
     .await?;
     test((
-        "'so 'many 'go#[o|]#d' text' here'",
+        "'so 'many 'go#[|]#od' text' here'",
         "2mi'",
         "'so '#[many 'good' text|]#' here'",
     ))
     .await?;
     test((
-        "'so \"many 'go#[o|]#d' text\" here'",
+        "'so \"many 'go#[|]#od' text\" here'",
         "mi\"",
         "'so \"#[many 'good' text|]#\" here'",
     ))
     .await?;
 
-    // Selection direction is preserved
+    // Normal-mode object targets are forward even from a backward operand.
     test((
         "(so [many {go#[|od]#} text] here)",
         "mi{",
-        "(so [many {#[|good]#} text] here)",
+        "(so [many {#[good|]#} text] here)",
     ))
     .await?;
 
@@ -184,38 +183,38 @@ async fn surround_by_character() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Stage 4: surround discovery requires the D8 adjacent-object affinity migration"]
 async fn surround_inside_pair() -> anyhow::Result<()> {
-    // Works at first character of buffer
-    // TODO: Adjust test when opening pair failure is fixed
-    test(("#[(|]#something)", "mim", "#[(|]#something)")).await?;
+    // Works at the opening pair at the first character of the buffer.
+    test(("#[|]#(something)", "mim", "(#[something|]#)")).await?;
 
     // Inside a valid pair selects pair
-    test(("some (#[t|]#ext) here", "mim", "some (#[text|]#) here")).await?;
+    test(("some (#[|]#text) here", "mim", "some (#[text|]#) here")).await?;
 
-    // On pair character selects pair
-    // TODO: Opening pair character is a known failure case that needs addressing
-    // test(("some #[(|]#text) here", "mim", "some (#[text|]#) here")).await?;
-    test(("some (text#[)|]# here", "mim", "some (#[text|]#) here")).await?;
+    // On either pair character selects the pair.
+    test(("some #[|]#(text) here", "mim", "some (#[text|]#) here")).await?;
+    test(("some (text#[|]#) here", "mim", "some (#[text|]#) here")).await?;
+    test(("(a)#[|]#", "mim", "(#[a|]#)")).await?;
+    test(("(a)#[|]# x", "mim", "(#[a|]#) x")).await?;
+    test(("(a)#[|]#(b)", "mim", "(a)(#[b|]#)")).await?;
 
     // No valid pair does nothing
-    test(("so#[m|]#e (text) here", "mim", "so#[m|]#e (text) here")).await?;
+    test(("so#[|]#me (text) here", "mim", "so#[|]#me (text) here")).await?;
 
     // Count skips to outer pairs
     test((
-        "(so (many (go#[o|]#d) text) here)",
+        "(so (many (go#[|]#od) text) here)",
         "1mim",
         "(so (many (#[good|]#) text) here)",
     ))
     .await?;
     test((
-        "(so (many (go#[o|]#d) text) here)",
+        "(so (many (go#[|]#od) text) here)",
         "2mim",
         "(so (#[many (good) text|]#) here)",
     ))
     .await?;
     test((
-        "(so (many (go#[o|]#d) text) here)",
+        "(so (many (go#[|]#od) text) here)",
         "3mim",
         "(#[so (many (good) text) here|]#)",
     ))
@@ -223,13 +222,13 @@ async fn surround_inside_pair() -> anyhow::Result<()> {
 
     // Matching pairs outside selection don't match
     test((
-        "((so)((many) go#[o|]#d (text))(here))",
+        "((so)((many) go#[|]#od (text))(here))",
         "mim",
         "((so)(#[(many) good (text)|]#)(here))",
     ))
     .await?;
     test((
-        "((so)((many) go#[o|]#d (text))(here))",
+        "((so)((many) go#[|]#od (text))(here))",
         "2mim",
         "(#[(so)((many) good (text))(here)|]#)",
     ))
@@ -237,41 +236,41 @@ async fn surround_inside_pair() -> anyhow::Result<()> {
 
     // Works with mixed braces
     test((
-        "(so [many {go#[o|]#d} text] here)",
+        "(so [many {go#[|]#od} text] here)",
         "mim",
         "(so [many {#[good|]#} text] here)",
     ))
     .await?;
     test((
-        "(so [many {go#[o|]#d} text] here)",
+        "(so [many {go#[|]#od} text] here)",
         "2mim",
         "(so [#[many {good} text|]#] here)",
     ))
     .await?;
     test((
-        "(so [many {go#[o|]#d} text] here)",
+        "(so [many {go#[|]#od} text] here)",
         "3mim",
         "(#[so [many {good} text] here|]#)",
     ))
     .await?;
 
-    // Selection direction is preserved
+    // Normal-mode object targets are forward even from a backward operand.
     test((
         "(so [many {go#[|od]#} text] here)",
         "mim",
-        "(so [many {#[|good]#} text] here)",
+        "(so [many {#[good|]#} text] here)",
     ))
     .await?;
     test((
         "(so [many {go#[|od]#} text] here)",
         "2mim",
-        "(so [#[|many {good} text]#] here)",
+        "(so [#[many {good} text|]#] here)",
     ))
     .await?;
     test((
         "(so [many {go#[|od]#} text] here)",
         "3mim",
-        "(#[|so [many {good} text] here]#)",
+        "(#[so [many {good} text] here|]#)",
     ))
     .await?;
 
@@ -313,38 +312,38 @@ async fn surround_inside_pair() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Stage 4: surround discovery requires the D8 adjacent-object affinity migration"]
 async fn surround_around_pair() -> anyhow::Result<()> {
-    // Works at first character of buffer
-    // TODO: Adjust test when opening pair failure is fixed
-    test(("#[(|]#something)", "mam", "#[(|]#something)")).await?;
+    // Works at the opening pair at the first character of the buffer.
+    test(("#[|]#(something)", "mam", "#[(something)|]#")).await?;
 
     // Inside a valid pair selects pair
-    test(("some (#[t|]#ext) here", "mam", "some #[(text)|]# here")).await?;
+    test(("some (#[|]#text) here", "mam", "some #[(text)|]# here")).await?;
 
-    // On pair character selects pair
-    // TODO: Opening pair character is a known failure case that needs addressing
-    // test(("some #[(|]#text) here", "mam", "some #[(text)|]# here")).await?;
-    test(("some (text#[)|]# here", "mam", "some #[(text)|]# here")).await?;
+    // On either pair character selects the pair.
+    test(("some #[|]#(text) here", "mam", "some #[(text)|]# here")).await?;
+    test(("some (text#[|]#) here", "mam", "some #[(text)|]# here")).await?;
+    test(("(a)#[|]#", "mam", "#[(a)|]#")).await?;
+    test(("(a)#[|]# x", "mam", "#[(a)|]# x")).await?;
+    test(("(a)#[|]#(b)", "mam", "(a)#[(b)|]#")).await?;
 
     // No valid pair does nothing
-    test(("so#[m|]#e (text) here", "mam", "so#[m|]#e (text) here")).await?;
+    test(("so#[|]#me (text) here", "mam", "so#[|]#me (text) here")).await?;
 
     // Count skips to outer pairs
     test((
-        "(so (many (go#[o|]#d) text) here)",
+        "(so (many (go#[|]#od) text) here)",
         "1mam",
         "(so (many #[(good)|]# text) here)",
     ))
     .await?;
     test((
-        "(so (many (go#[o|]#d) text) here)",
+        "(so (many (go#[|]#od) text) here)",
         "2mam",
         "(so #[(many (good) text)|]# here)",
     ))
     .await?;
     test((
-        "(so (many (go#[o|]#d) text) here)",
+        "(so (many (go#[|]#od) text) here)",
         "3mam",
         "#[(so (many (good) text) here)|]#",
     ))
@@ -352,13 +351,13 @@ async fn surround_around_pair() -> anyhow::Result<()> {
 
     // Matching pairs outside selection don't match
     test((
-        "((so)((many) go#[o|]#d (text))(here))",
+        "((so)((many) go#[|]#od (text))(here))",
         "mam",
         "((so)#[((many) good (text))|]#(here))",
     ))
     .await?;
     test((
-        "((so)((many) go#[o|]#d (text))(here))",
+        "((so)((many) go#[|]#od (text))(here))",
         "2mam",
         "#[((so)((many) good (text))(here))|]#",
     ))
@@ -366,41 +365,41 @@ async fn surround_around_pair() -> anyhow::Result<()> {
 
     // Works with mixed braces
     test((
-        "(so [many {go#[o|]#d} text] here)",
+        "(so [many {go#[|]#od} text] here)",
         "mam",
         "(so [many #[{good}|]# text] here)",
     ))
     .await?;
     test((
-        "(so [many {go#[o|]#d} text] here)",
+        "(so [many {go#[|]#od} text] here)",
         "2mam",
         "(so #[[many {good} text]|]# here)",
     ))
     .await?;
     test((
-        "(so [many {go#[o|]#d} text] here)",
+        "(so [many {go#[|]#od} text] here)",
         "3mam",
         "#[(so [many {good} text] here)|]#",
     ))
     .await?;
 
-    // Selection direction is preserved
+    // Normal-mode object targets are forward even from a backward operand.
     test((
         "(so [many {go#[|od]#} text] here)",
         "mam",
-        "(so [many #[|{good}]# text] here)",
+        "(so [many #[{good}|]# text] here)",
     ))
     .await?;
     test((
         "(so [many {go#[|od]#} text] here)",
         "2mam",
-        "(so #[|[many {good} text]]# here)",
+        "(so #[[many {good} text]|]# here)",
     ))
     .await?;
     test((
         "(so [many {go#[|od]#} text] here)",
         "3mam",
-        "#[|(so [many {good} text] here)]#",
+        "#[(so [many {good} text] here)|]#",
     ))
     .await?;
 
@@ -442,14 +441,13 @@ async fn surround_around_pair() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Stage 4: match-around requires the D8 adjacent-object affinity migration"]
 async fn match_around_closest_ts() -> anyhow::Result<()> {
     test_with_config(
         AppBuilder::new().with_file("foo.rs", None),
         (
             r#"fn main() {testing!{"f#[|oo]#)"};}"#,
             "mam",
-            r#"fn main() {testing!{#[|"foo)"]#};}"#,
+            r#"fn main() {testing!{#["foo)"|]#};}"#,
         ),
     )
     .await?;
@@ -459,7 +457,7 @@ async fn match_around_closest_ts() -> anyhow::Result<()> {
         (
             r##"fn main() { let _ = ("#[|1]#23", "#(|1)#23"); } "##,
             "3mam",
-            r##"fn main() #[|{ let _ = ("123", "123"); }]# "##,
+            r##"fn main() #[{ let _ = ("123", "123"); }|]# "##,
         ),
     )
     .await?;
@@ -469,7 +467,7 @@ async fn match_around_closest_ts() -> anyhow::Result<()> {
         (
             r##" fn main() { let _ = ("12#[|3", "12]#3"); } "##,
             "1mam",
-            r##" fn main() { let _ = #[|("123", "123")]#; } "##,
+            r##" fn main() { let _ = #[("123", "123")|]#; } "##,
         ),
     )
     .await?;
@@ -528,13 +526,12 @@ async fn cursor_position_append_eof() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Stage 4: tree-sitter Select extension requires the object-affinity migration"]
 async fn select_mode_tree_sitter_next_function_is_union_of_objects() -> anyhow::Result<()> {
     test_with_config(
         AppBuilder::new().with_file("foo.rs", None),
         (
             indoc! {"\
-                #[/|]#// Increments
+                #[|]#/// Increments
                 fn inc(x: usize) -> usize { x + 1 }
                 /// Decrements
                 fn dec(x: usize) -> usize { x - 1 }
@@ -542,7 +539,7 @@ async fn select_mode_tree_sitter_next_function_is_union_of_objects() -> anyhow::
             "]fv]f",
             indoc! {"\
                  /// Increments
-                 fn inc(x: usize) -> usize { x + 1 }#[
+                 #[fn inc(x: usize) -> usize { x + 1 }
                  /// Decrements
                  fn dec(x: usize) -> usize { x - 1 }|]#
             "},
@@ -554,7 +551,6 @@ async fn select_mode_tree_sitter_next_function_is_union_of_objects() -> anyhow::
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Stage 4: tree-sitter Select extension requires the object-affinity migration"]
 async fn select_mode_tree_sitter_prev_function_unselects_object() -> anyhow::Result<()> {
     test_with_config(
         AppBuilder::new().with_file("foo.rs", None),
@@ -568,9 +564,9 @@ async fn select_mode_tree_sitter_prev_function_unselects_object() -> anyhow::Res
             "v[f",
             indoc! {"\
                  /// Increments
-                 #[|fn inc(x: usize) -> usize { x + 1 }
+                 #[fn inc(x: usize) -> usize { x + 1 }
                  /// Decrements
-                 fn dec(x: usize) -> usize { x - 1 }]#
+                 |]#fn dec(x: usize) -> usize { x - 1 }
             "},
         ),
     )
@@ -580,7 +576,6 @@ async fn select_mode_tree_sitter_prev_function_unselects_object() -> anyhow::Res
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Stage 4: tree-sitter Select extension requires the object-affinity migration"]
 async fn select_mode_tree_sitter_prev_function_goes_backwards_to_object() -> anyhow::Result<()> {
     // Note: the anchor stays put and the head moves back.
     test_with_config(
@@ -596,12 +591,12 @@ async fn select_mode_tree_sitter_prev_function_goes_backwards_to_object() -> any
             "},
             "v[f",
             indoc! {"\
-                /// Increments
-                fn inc(x: usize) -> usize { x + 1 }
-                /// Decrements
-                #[|fn dec(x: usize) -> usize { x - 1 }
-                /// Identity
-                fn ident(x: usize) -> usize { x }]#
+                 /// Increments
+                 fn inc(x: usize) -> usize { x + 1 }
+                 /// Decrements
+                 fn dec(x: usize) -> usize { x - 1 }
+                 /// Identity
+                 #[|]#fn ident(x: usize) -> usize { x }
             "},
         ),
     )
@@ -620,12 +615,12 @@ async fn select_mode_tree_sitter_prev_function_goes_backwards_to_object() -> any
             "},
             "v[f[f",
             indoc! {"\
-                /// Increments
-                #[|fn inc(x: usize) -> usize { x + 1 }
-                /// Decrements
-                fn dec(x: usize) -> usize { x - 1 }
-                /// Identity
-                fn ident(x: usize) -> usize { x }]#
+                 /// Increments
+                 fn inc(x: usize) -> usize { x + 1 }
+                 /// Decrements
+                 #[|fn dec(x: usize) -> usize { x - 1 }
+                 /// Identity
+                 ]#fn ident(x: usize) -> usize { x }
             "},
         ),
     )

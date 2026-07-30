@@ -1064,6 +1064,74 @@ mod tests {
     }
 
     #[test]
+    fn positions_and_ranges_preserve_multibyte_edges_in_all_encodings() {
+        use helix_core::Range;
+
+        let doc = Rope::from("aé🦀\nβ");
+        let cases = [
+            (0, [(0, 0), (0, 0), (0, 0)]),
+            (1, [(0, 1), (0, 1), (0, 1)]),
+            (2, [(0, 3), (0, 2), (0, 2)]),
+            (3, [(0, 7), (0, 4), (0, 3)]),
+            (4, [(1, 0), (1, 0), (1, 0)]),
+            (5, [(1, 2), (1, 1), (1, 1)]),
+        ];
+        let encodings = [
+            OffsetEncoding::Utf8,
+            OffsetEncoding::Utf16,
+            OffsetEncoding::Utf32,
+        ];
+
+        for (edge, positions) in cases {
+            for (encoding, (line, character)) in encodings.into_iter().zip(positions) {
+                let position = lsp::Position::new(line, character);
+                assert_eq!(pos_to_lsp_pos(&doc, edge, encoding), position);
+                assert_eq!(lsp_pos_to_pos(&doc, position, encoding), Some(edge));
+            }
+        }
+
+        for encoding in encodings {
+            let expected = lsp::Range::new(
+                pos_to_lsp_pos(&doc, 1, encoding),
+                pos_to_lsp_pos(&doc, 5, encoding),
+            );
+            assert_eq!(
+                range_to_lsp_range(&doc, Range::new(1, 5), encoding),
+                expected
+            );
+            assert_eq!(
+                range_to_lsp_range(&doc, Range::new(5, 1), encoding),
+                expected
+            );
+            assert_eq!(
+                lsp_range_to_range(&doc, expected, encoding),
+                Some(Range::new(1, 5))
+            );
+            for edge in [0, 2, 3, 4, 5] {
+                let position = pos_to_lsp_pos(&doc, edge, encoding);
+                let point = lsp::Range::new(position, position);
+                assert_eq!(
+                    range_to_lsp_range(&doc, Range::point(edge), encoding),
+                    point
+                );
+                assert_eq!(
+                    lsp_range_to_range(&doc, point, encoding),
+                    Some(Range::point(edge))
+                );
+            }
+        }
+
+        assert_eq!(
+            lsp_pos_to_pos(&doc, lsp::Position::new(0, 2), OffsetEncoding::Utf8),
+            Some(1)
+        );
+        assert_eq!(
+            lsp_pos_to_pos(&doc, lsp::Position::new(0, 3), OffsetEncoding::Utf16),
+            Some(2)
+        );
+    }
+
+    #[test]
     fn emoji_format_gh_4791() {
         use lsp::{Position, Range, TextEdit};
 

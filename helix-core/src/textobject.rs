@@ -279,10 +279,15 @@ pub fn textobject_treesitter(
     loader: &syntax::Loader,
     _count: usize,
 ) -> Range {
-    let byte_pos = slice.char_to_byte(range.cursor(slice));
-    let layer = syntax.layer_for_byte_range(byte_pos as u32, byte_pos as u32);
+    let byte_range = crate::selection::byte_range_at_edge(slice, range.cursor(slice))
+        .expect("selection cursor must be within the document");
+    let byte_pos = byte_range.start;
+    let Some(layer) = syntax.layer_for_byte_span(byte_range.clone()) else {
+        return range;
+    };
     let root = syntax
-        .tree_for_byte_range(byte_pos as u32, byte_pos as u32)
+        .tree_for_byte_span(byte_range.clone())
+        .expect("a syntax layer must have a tree")
         .root_node();
     let textobject_query = loader.textobject_query(syntax.layer(layer).language);
     let get_range = move || -> Option<Range> {
@@ -295,7 +300,7 @@ pub fn textobject_treesitter(
         let len = slice.len_bytes();
         let start_byte = node.start_byte();
         let end_byte = node.end_byte();
-        if start_byte >= len || end_byte >= len {
+        if len < start_byte || len < end_byte || end_byte < start_byte {
             return None;
         }
 
@@ -547,13 +552,13 @@ mod test {
                 "samexx 'single' surround pairs",
                 vec![
                     (3, Inside, (3, 3), '\'', 1),
-                    (7, Inside, (7, 7), '\'', 1),
+                    (7, Inside, (8, 14), '\'', 1),
                     (10, Inside, (8, 14), '\'', 1),
-                    (14, Inside, (14, 14), '\'', 1),
+                    (14, Inside, (8, 14), '\'', 1),
                     (3, Around, (3, 3), '\'', 1),
-                    (7, Around, (7, 7), '\'', 1),
+                    (7, Around, (7, 15), '\'', 1),
                     (10, Around, (7, 15), '\'', 1),
-                    (14, Around, (14, 14), '\'', 1),
+                    (14, Around, (7, 15), '\'', 1),
                 ],
             ),
             (

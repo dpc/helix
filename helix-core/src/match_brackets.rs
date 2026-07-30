@@ -78,6 +78,28 @@ pub fn find_matching_bracket_at_edge(
         })
 }
 
+/// Finds a bracket or surrounding pair adjacent to an edge, right first.
+#[must_use]
+pub fn find_matching_bracket_fuzzy_at_edge(
+    syntax: Option<&Syntax>,
+    doc: RopeSlice,
+    edge: usize,
+) -> Option<usize> {
+    if let Some(matched) = crate::selection::adjacent_char_positions(doc, edge)
+        .ok()?
+        .find_map(|pos| {
+            syntax.map_or_else(
+                || find_matching_bracket_plaintext(doc, pos),
+                |syntax| find_matching_bracket(syntax, doc, pos),
+            )
+        })
+    {
+        return Some(matched);
+    }
+    doc.get_char(edge)?;
+    syntax.and_then(|syntax| find_matching_bracket_fuzzy(syntax, doc, edge))
+}
+
 // Returns the position of the bracket that is closing the current scope.
 //
 // If the cursor is on an opening or closing bracket, the function
@@ -324,12 +346,10 @@ fn as_open_pair(doc: RopeSlice, node: &Node) -> Option<(char, char)> {
 
 /// If node is a single char return it (and its char position)
 fn as_char(doc: RopeSlice, node: &Node) -> Option<(usize, char)> {
-    // TODO: multi char/non ASCII pairs
-    if node.byte_range().len() != 1 {
-        return None;
-    }
-    let pos = doc.try_byte_to_char(node.start_byte() as usize).ok()?;
-    Some((pos, doc.char(pos)))
+    let byte_range = node.byte_range();
+    let start = doc.try_byte_to_char(byte_range.start as usize).ok()?;
+    let end = doc.try_byte_to_char(byte_range.end as usize).ok()?;
+    (end == start + 1).then(|| (start, doc.char(start)))
 }
 
 #[cfg(test)]

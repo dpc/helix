@@ -1972,7 +1972,12 @@ fn tree_sitter_highlight_name(
     };
     let text = doc.text().slice(..);
     let cursor = doc.selection(view.id).primary().cursor(text);
-    let byte = text.char_to_byte(cursor) as u32;
+    let byte_range = helix_core::selection::byte_range_at_edge(text, cursor)
+        .expect("selection cursor must be within the document");
+    if byte_range.is_empty() {
+        return Ok(());
+    }
+    let byte = byte_range.start as u32;
     // Query the same range as the one used in syntax highlighting.
     let range = {
         // Calculate viewport byte ranges:
@@ -2009,6 +2014,8 @@ fn tree_sitter_highlight_name(
             acc
         });
 
+    #[cfg(feature = "integration")]
+    ui::Markdown::record_integration_contents(&content);
     let callback = async move {
         let call: job::Callback = Callback::EditorCompositor(Box::new(
             move |editor: &mut Editor, compositor: &mut Compositor| {
@@ -2019,7 +2026,6 @@ fn tree_sitter_highlight_name(
         ));
         Ok(call)
     };
-
     cx.jobs.callback(callback);
 
     Ok(())
@@ -2042,10 +2048,14 @@ fn tree_sitter_layers(
     let loader: &helix_core::syntax::Loader = &cx.editor.syn_loader.load();
     let text = doc.text().slice(..);
     let cursor = doc.selection(view.id).primary().cursor(text);
-    let byte = text.char_to_byte(cursor) as u32;
+    let byte_range = helix_core::selection::byte_range_at_edge(text, cursor)
+        .expect("selection cursor must be within the document");
+    if byte_range.is_empty() {
+        return Ok(());
+    }
     let languages =
         syntax
-            .layers_for_byte_range(byte, byte)
+            .layers_for_byte_span(byte_range)
             .fold(String::new(), |mut acc, layer| {
                 if !acc.is_empty() {
                     acc.push_str(", ");
@@ -2058,7 +2068,8 @@ fn tree_sitter_layers(
                 );
                 acc
             });
-
+    #[cfg(feature = "integration")]
+    ui::Markdown::record_integration_contents(&languages);
     let callback = async move {
         let call: job::Callback = Callback::EditorCompositor(Box::new(
             move |editor: &mut Editor, compositor: &mut Compositor| {
@@ -2069,7 +2080,6 @@ fn tree_sitter_layers(
         ));
         Ok(call)
     };
-
     cx.jobs.callback(callback);
 
     Ok(())
@@ -2537,12 +2547,22 @@ fn tree_sitter_subtree(
     if let Some(syntax) = doc.syntax() {
         let primary_selection = doc.selection(view.id).primary();
         let text = doc.text();
-        let from = text.char_to_byte(primary_selection.from()) as u32;
-        let to = text.char_to_byte(primary_selection.to()) as u32;
-        if let Some(selected_node) = syntax.descendant_for_byte_range(from, to) {
+        let byte_range = if primary_selection.is_empty() {
+            helix_core::selection::byte_range_at_edge(text.slice(..), primary_selection.head)
+                .expect("selection cursor must be within the document")
+        } else {
+            let (start, end) = primary_selection.into_byte_range(text.slice(..));
+            start..end
+        };
+        if byte_range.is_empty() {
+            return Ok(());
+        }
+        if let Some(selected_node) = syntax.descendant_for_byte_span(byte_range) {
             let mut contents = String::from("```tsq\n");
             helix_core::syntax::pretty_print_tree(&mut contents, selected_node)?;
             contents.push_str("\n```");
+            #[cfg(feature = "integration")]
+            ui::Markdown::record_integration_contents(&contents);
 
             let callback = async move {
                 let call: job::Callback = Callback::EditorCompositor(Box::new(
@@ -2554,7 +2574,6 @@ fn tree_sitter_subtree(
                 ));
                 Ok(call)
             };
-
             cx.jobs.callback(callback);
         }
     }

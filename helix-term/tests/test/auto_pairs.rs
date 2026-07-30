@@ -14,6 +14,29 @@ fn matching_pairs() -> impl Iterator<Item = &'static (char, char)> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn injection_specific_pairs_use_the_final_injected_scalar() -> anyhow::Result<()> {
+    for (input, expected) in [
+        ("<div>x#[|]# </div>", "<div>x<> </div>"),
+        ("<script>x#[|]# </script>", "<script>x< </script>"),
+    ] {
+        test_key_sequence(
+            &mut AppBuilder::new()
+                .with_file("foo.html", None)
+                .with_input_text(input)
+                .build()?,
+            Some("i<lt>"),
+            Some(&|app| {
+                let (_, doc) = helix_view::current_ref!(app.editor);
+                assert_eq!(doc.text().to_string(), expected);
+            }),
+            false,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn insert_basic() -> anyhow::Result<()> {
     for pair in DEFAULT_PAIRS {
         test((

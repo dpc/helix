@@ -36,6 +36,18 @@ use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
 
 use tui::{buffer::Buffer as Surface, text::Span};
 
+#[cfg(test)]
+#[path = "editor/edge_tests.rs"]
+mod edge_tests;
+
+fn diagnostic_range_owns_edge(range: helix_core::diagnostic::Range, edge: usize) -> bool {
+    if range.start == range.end {
+        edge == range.start
+    } else {
+        range.start <= edge && edge < range.end
+    }
+}
+
 pub struct EditorView {
     pub keymaps: Keymaps,
     on_next_key: Option<(OnKeyCallback, OnKeyCallbackKind)>,
@@ -484,7 +496,7 @@ impl EditorView {
         view: &View,
         theme: &Theme,
     ) -> Option<OverlayHighlights> {
-        let ranges = doc.document_highlights(view.id)?;
+        let ranges = doc.document_highlight_render_ranges(view.id)?;
         if ranges.is_empty() {
             return None;
         }
@@ -664,7 +676,8 @@ impl EditorView {
         let highlight = theme.find_highlight_exact("ui.cursor.match")?;
         let text = doc.text().slice(..);
         let pos = doc.selection(view.id).primary().cursor(text);
-        let pos = helix_core::match_brackets::find_matching_bracket(syntax, text, pos)?;
+        let pos =
+            helix_core::match_brackets::find_matching_bracket_at_edge(Some(syntax), text, pos)?;
         Some(OverlayHighlights::single(highlight, pos..pos + 1))
     }
 
@@ -944,9 +957,10 @@ impl EditorView {
             .primary()
             .cursor(doc.text().slice(..));
 
-        let diagnostics = doc.diagnostics().iter().filter(|diagnostic| {
-            diagnostic.range.start <= cursor && diagnostic.range.end >= cursor
-        });
+        let diagnostics = doc
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic_range_owns_edge(diagnostic.range, cursor));
 
         let warning = theme.get("warning");
         let error = theme.get("error");

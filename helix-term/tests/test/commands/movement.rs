@@ -1,7 +1,6 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Stage 4: parent-node motion requires tree-sitter edge-affinity migration"]
 async fn test_move_parent_node_end() -> anyhow::Result<()> {
     let tests = vec![
         // single cursor stays single cursor, first goes to end of current
@@ -12,11 +11,22 @@ async fn test_move_parent_node_end() -> anyhow::Result<()> {
                     let result = if true {
                         "yes"
                     } else {
-                        "no#["|]#
+                        "no#[|]#"
                     }
                 }
             "##},
             "<A-e>",
+            indoc! {"\
+                fn foo() {
+                    let result = if true {
+                        \"yes\"
+                    } else {
+                        \"no#[\"|]#
+                    }
+                }
+            "},
+        ),
+        (
             indoc! {"\
                 fn foo() {
                     let result = if true {
@@ -26,36 +36,25 @@ async fn test_move_parent_node_end() -> anyhow::Result<()> {
                     }
                 }
             "},
-        ),
-        (
-            indoc! {"\
-                fn foo() {
-                    let result = if true {
-                        \"yes\"
-                    } else {
-                        \"no\"#[\n|]#
-                    }
-                }
-            "},
             "<A-e>",
             indoc! {"\
                 fn foo() {
                     let result = if true {
                         \"yes\"
                     } else {
-                        \"no\"
-                #[    }|]#
+                        \"no\"#[
+                    }|]#
                 }
             "},
         ),
-        // select mode extends
+        // Select mode extends from the point through successive parent ends.
         (
             indoc! {r##"
                 fn foo() {
                     let result = if true {
                         "yes"
                     } else {
-                        #["no"|]#
+                        "no#[|]#"
                     }
                 }
             "##},
@@ -65,7 +64,7 @@ async fn test_move_parent_node_end() -> anyhow::Result<()> {
                     let result = if true {
                         \"yes\"
                     } else {
-                        \"no\"#[
+                        \"no#[\"
                     }|]#
                 }
             "},
@@ -80,7 +79,6 @@ async fn test_move_parent_node_end() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Stage 4: parent-node motion requires tree-sitter edge-affinity migration"]
 async fn test_move_parent_node_start() -> anyhow::Result<()> {
     let tests = vec![
         // single cursor stays single cursor, first goes to end of current
@@ -91,7 +89,7 @@ async fn test_move_parent_node_start() -> anyhow::Result<()> {
                     let result = if true {
                         "yes"
                     } else {
-                        "no#["|]#
+                        "no#[|]#"
                     }
                 }
             "##},
@@ -101,7 +99,7 @@ async fn test_move_parent_node_start() -> anyhow::Result<()> {
                     let result = if true {
                         \"yes\"
                     } else {
-                        #[|\"no\"]#
+                        #[|\"no]#\"
                     }
                 }
             "},
@@ -112,7 +110,7 @@ async fn test_move_parent_node_start() -> anyhow::Result<()> {
                     let result = if true {
                         \"yes\"
                     } else {
-                        \"no\"#[\n|]#
+                        \"no\"#[|]#
                     }
                 }
             "},
@@ -122,8 +120,30 @@ async fn test_move_parent_node_start() -> anyhow::Result<()> {
                     let result = if true {
                         \"yes\"
                     } else #[|{
-                        \"no\"
-                ]#    }
+                        \"no\"]#
+                    }
+                }
+            "},
+        ),
+        // Repeated Select-mode parent starts keep the original point as anchor.
+        (
+            indoc! {r##"
+                fn foo() {
+                    let result = if true {
+                        "yes"
+                    } else {
+                        "no#[|]#"
+                    }
+                }
+            "##},
+            "v<A-b><A-b><A-b>",
+            indoc! {"\
+                fn foo() {
+                    let result = if true {
+                        \"yes\"
+                    } #[|else {
+                        \"no]#\"
+                    }
                 }
             "},
         ),
@@ -132,7 +152,7 @@ async fn test_move_parent_node_start() -> anyhow::Result<()> {
                 fn foo() {
                     let result = if true {
                         \"yes\"
-                    } else #[{|]#
+                    } else #[|]#{
                         \"no\"
                     }
                 }
@@ -142,51 +162,8 @@ async fn test_move_parent_node_start() -> anyhow::Result<()> {
                 fn foo() {
                     let result = if true {
                         \"yes\"
-                    } else #[|{]#
+                    } #[|else ]#{
                         \"no\"
-                    }
-                }
-            "},
-        ),
-        // select mode extends
-        (
-            indoc! {r##"
-                fn foo() {
-                    let result = if true {
-                        "yes"
-                    } else {
-                        #["no"|]#
-                    }
-                }
-            "##},
-            "v<A-b><A-b>",
-            indoc! {"\
-                fn foo() {
-                    let result = if true {
-                        \"yes\"
-                    } #[|else {
-                        \"no\"]#
-                    }
-                }
-            "},
-        ),
-        (
-            indoc! {r##"
-                fn foo() {
-                    let result = if true {
-                        "yes"
-                    } else {
-                        #["no"|]#
-                    }
-                }
-            "##},
-            "v<A-b><A-b><A-b>",
-            indoc! {"\
-                fn foo() {
-                    let result = #[|if true {
-                        \"yes\"
-                    } else {
-                        \"no\"]#
                     }
                 }
             "},
@@ -847,13 +824,12 @@ async fn test_select_prev_sibling() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "block-era repeat fixtures are superseded by core D8 edge tests"]
 async fn match_bracket() -> anyhow::Result<()> {
     let rust_tests = vec![
         // fwd
         (
             indoc! {r##"
-                fn foo(x: usize) -> usize { #[x|]# + 1 }
+                fn foo(x: usize) -> usize { #[|]#x + 1 }
             "##},
             "mm",
             indoc! {r##"
@@ -863,27 +839,27 @@ async fn match_bracket() -> anyhow::Result<()> {
         // backward
         (
             indoc! {r##"
-                fn foo(x: usize) -> usize { #[x|]# + 1 }
+                fn foo(x: usize) -> usize { #[|]#x + 1 }
             "##},
             "mmmm",
             indoc! {r##"
-                fn foo(x: usize) -> usize #[{|]# x + 1 }
+                fn foo(x: usize) -> usize #[|{]# x + 1 }
             "##},
         ),
-        // avoid false positive inside string literal
+        // A bitwise OR is not a delimiter pair.
         (
             indoc! {r##"
-                fn foo() -> &'static str { "(hello#[ |]#world)" }
+                fn foo() -> usize { 1 #[|]#| 2 }
             "##},
             "mm",
             indoc! {r##"
-                fn foo() -> &'static str { "(hello world)#["|]# }
+                fn foo() -> usize { 1 | 2 #[}|]#
             "##},
         ),
         // make sure matching on quotes works
         (
             indoc! {r##"
-                fn foo() -> &'static str { "(hello#[ |]#world)" }
+                fn foo() -> &'static str { "(hello#[|]# world)" }
             "##},
             "mm",
             indoc! {r##"
@@ -893,11 +869,11 @@ async fn match_bracket() -> anyhow::Result<()> {
         // .. on both ends
         (
             indoc! {r##"
-                fn foo() -> &'static str { "(hello#[ |]#world)" }
+                fn foo() -> &'static str { "(hello#[|]# world)" }
             "##},
             "mmmm",
             indoc! {r##"
-                fn foo() -> &'static str { #["|]#(hello world)" }
+                fn foo() -> &'static str { #[|"]#(hello world)" }
             "##},
         ),
         // match on siblings nodes
@@ -905,7 +881,7 @@ async fn match_bracket() -> anyhow::Result<()> {
             indoc! {r##"
                 fn foo(bar: Option<usize>) -> usize {
                     match bar {
-                        Some(b#[a|]#r) => bar,
+                        Some(b#[|]#ar) => bar,
                         None => 42,
                     } 
                 }
@@ -914,7 +890,7 @@ async fn match_bracket() -> anyhow::Result<()> {
             indoc! {r##"
                 fn foo(bar: Option<usize>) -> usize {
                     match bar {
-                        Some#[(|]#bar) => bar,
+                        Some#[|(]#bar) => bar,
                         None => 42,
                     } 
                 }
@@ -925,7 +901,7 @@ async fn match_bracket() -> anyhow::Result<()> {
         (
             indoc! {r##"
                 fn foo() {
-                    foo::<b#[a|]#r<>> 
+                    foo::<b#[|]#ar<>> 
                 }
             "##},
             "mm",
@@ -938,7 +914,7 @@ async fn match_bracket() -> anyhow::Result<()> {
         // named node with 2 or more children
         (
             indoc! {r##"
-                use a::#[{|]#
+                use a::#[|]#{
                     b::{c, d, e, f, g},
                     h, i, j, k, l, m, n,
                 };
@@ -959,7 +935,7 @@ async fn match_bracket() -> anyhow::Result<()> {
         // them here
         (
             indoc! {r##"
-                foo_python = "mm does not#[ |]#work on this string"
+                foo_python = "mm does not#[|]# work on this string"
             "##},
             "mm",
             indoc! {r##"
@@ -968,13 +944,18 @@ async fn match_bracket() -> anyhow::Result<()> {
         ),
         (
             indoc! {r##"
-                foo_python = "mm does not#[ |]#work on this string"
+                foo_python = "mm does not#[|]# work on this string"
             "##},
             "mmmm",
             indoc! {r##"
-                foo_python = #["|]#mm does not work on this string"
+                foo_python = #[|"]#mm does not work on this string"
             "##},
         ),
+    ];
+    let plain_tests = [
+        ("#[|]#「é」", "mm", "「é#[」|]#"),
+        ("「é」#[|]#", "mm", "#[|「]#é」"),
+        ("()#[|]#[]", "mm", "()[#[]|]#"),
     ];
 
     for test in rust_tests {
@@ -984,6 +965,9 @@ async fn match_bracket() -> anyhow::Result<()> {
     for test in python_tests {
         println!("{test:?}");
         test_with_config(AppBuilder::new().with_file("foo.py", None), test).await?;
+    }
+    for case in plain_tests {
+        test(case).await?;
     }
 
     Ok(())

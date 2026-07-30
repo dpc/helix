@@ -329,8 +329,61 @@ pub struct DocumentColorSwatches {
 
 /// Highlight ranges returned by LSP `textDocument/documentHighlight` for a view.
 #[derive(Debug, Clone, Default)]
-pub struct DocumentHighlights {
-    pub ranges: Vec<std::ops::Range<usize>>,
+pub(crate) struct DocumentHighlights {
+    ranges: Vec<DocumentHighlightRange>,
+    render_ranges: Vec<std::ops::Range<usize>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DocumentHighlightRange {
+    Point(usize),
+    Span(std::ops::Range<usize>),
+}
+
+impl DocumentHighlights {
+    fn from_ranges(ranges: Vec<std::ops::Range<usize>>) -> Self {
+        let ranges = ranges
+            .into_iter()
+            .filter_map(|range| {
+                if range.end < range.start {
+                    None
+                } else if range.is_empty() {
+                    Some(DocumentHighlightRange::Point(range.start))
+                } else {
+                    Some(DocumentHighlightRange::Span(range))
+                }
+            })
+            .collect();
+        let mut highlights = Self {
+            ranges,
+            render_ranges: Vec::new(),
+        };
+        highlights.rebuild_render_ranges();
+        highlights
+    }
+
+    fn rebuild_render_ranges(&mut self) {
+        let mut ranges: Vec<_> = self
+            .ranges
+            .iter()
+            .filter_map(|range| match range {
+                DocumentHighlightRange::Point(_) => None,
+                DocumentHighlightRange::Span(range) => Some(range.clone()),
+            })
+            .collect();
+        ranges.sort_by_key(|range| (range.start, range.end));
+        let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            if let Some(last) = merged.last_mut() {
+                if range.start < last.end {
+                    last.end = last.end.max(range.end);
+                    continue;
+                }
+            }
+            merged.push(range);
+        }
+        self.render_ranges = merged;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1694,23 +1747,34 @@ impl Document {
         for highlights in self.document_highlights.values_mut() {
             let text_len = self.text.len_chars();
             let mut updated = Vec::with_capacity(highlights.ranges.len());
-            for mut range in highlights.ranges.drain(..) {
-                changes.update_positions(
-                    [
-                        (&mut range.start, Assoc::After),
-                        (&mut range.end, Assoc::After),
-                    ]
-                    .into_iter(),
-                );
-                if range.start >= text_len {
-                    continue;
-                }
-                let end = range.end.min(text_len);
-                if range.start < end {
-                    updated.push(range.start..end);
+            for range in highlights.ranges.drain(..) {
+                match range {
+                    DocumentHighlightRange::Point(mut pos) => {
+                        changes.update_positions(std::iter::once((&mut pos, Assoc::After)));
+                        if pos <= text_len {
+                            updated.push(DocumentHighlightRange::Point(pos));
+                        }
+                    }
+                    DocumentHighlightRange::Span(mut range) => {
+                        changes.update_positions(
+                            [
+                                (&mut range.start, Assoc::After),
+                                (&mut range.end, Assoc::After),
+                            ]
+                            .into_iter(),
+                        );
+                        if text_len < range.start {
+                            continue;
+                        }
+                        range.end = range.end.min(text_len);
+                        if range.start < range.end {
+                            updated.push(DocumentHighlightRange::Span(range));
+                        }
+                    }
                 }
             }
             highlights.ranges = updated;
+            highlights.rebuild_render_ranges();
         }
 
         helix_event::dispatch(DocumentDidChange {
@@ -2001,7 +2065,13 @@ impl Document {
     ) -> Option<&'a LanguageConfiguration> {
         match self.syntax() {
             Some(syntax) => {
-                let layer = syntax.layer_for_byte_range(byte_pos as u32, byte_pos as u32);
+                let text = self.text().slice(..);
+                let edge = text.try_byte_to_char(byte_pos).ok()?;
+                let byte_range = helix_core::selection::byte_range_at_edge(text, edge).ok()?;
+                if byte_range.is_empty() {
+                    return self.language_config();
+                }
+                let layer = syntax.layer_for_byte_span(byte_range)?;
                 Some(&**loader.language(syntax.layer(layer).language).config())
             }
             None => self.language_config(),
@@ -2409,8 +2479,19 @@ impl Document {
             .as_ref()
             .and_then(|syntax| {
                 let selection = self.selection(view.id).primary();
-                let (start, end) = selection.into_byte_range(self.text().slice(..));
-                let layer = syntax.layer_for_byte_range(start as u32, end as u32);
+                let text = self.text().slice(..);
+                let byte_range = if selection.is_empty() {
+                    helix_core::selection::byte_range_at_edge(text, selection.head).ok()?
+                } else {
+                    let (start, end) = selection.into_byte_range(text);
+                    start..end
+                };
+                if byte_range.is_empty() {
+                    return self
+                        .language_config()
+                        .and_then(|config| config.auto_pairs.as_ref());
+                }
+                let layer = syntax.layer_for_byte_span(byte_range)?;
 
                 let lang_config = loader.language(syntax.layer(layer).language).config();
                 lang_config.auto_pairs.as_ref()
@@ -2542,44 +2623,23 @@ impl Document {
         self.update_breadcrumbs_for_view_inlined(view_id);
     }
 
+    #[inline(always)]
+    const fn position_in_breadcrumb_range(pos: lsp::Position, range: lsp::Range) -> bool {
+        if pos.line < range.start.line || range.end.line < pos.line {
+            return false;
+        }
+        if pos.line == range.start.line && pos.character < range.start.character {
+            return false;
+        }
+        if pos.line == range.end.line && range.end.character <= pos.character {
+            return false;
+        }
+        true
+    }
+
     // We want to make sure this is inlined in the hotpath (cursor position change).
     #[inline(always)]
     pub fn update_breadcrumbs_for_view_inlined(&mut self, view_id: ViewId) {
-        #[inline(always)]
-        const fn in_range(pos: lsp::Position, range: lsp::Range) -> bool {
-            // PERF:
-            // Line-based filtering is the most effective early exit indicator,
-            // so do first, before other evaluations; this should be friendly to
-            // the CPU branch predictor.
-            if pos.line < range.start.line || pos.line > range.end.line {
-                return false;
-            }
-
-            // Check if the cursor position is "in" the symbols "depth".
-            //
-            // In the context of breadcrumbs, this would be the difference between
-            // if the cursor is in an impl block or in an impl block and in a
-            // function of the impl block (`|` is the cursor):
-            //
-            // ```rust
-            // impl Foo {
-            //     f|n bar() {} // In `bar`: impl Foo > bar
-            //
-            //   | fn baz() {} // Not in `baz`: impl Foo
-            //
-            //     fn quux() {} | // Not in `quux`: impl Foo
-            // }
-            // ```
-            if pos.line == range.start.line && pos.character < range.start.character {
-                return false;
-            }
-            if pos.line == range.end.line && pos.character > range.end.character {
-                return false;
-            }
-
-            true
-        }
-
         let Some(symbols) = self.symbols.as_ref() else {
             return;
         };
@@ -2596,7 +2656,7 @@ impl Document {
 
         while let Some(symbol) = current
             .iter()
-            .find(|&symbol| in_range(position, symbol.range))
+            .find(|&symbol| Self::position_in_breadcrumb_range(position, symbol.range))
         {
             breadcrumb.push(Crumb::from(symbol));
             match symbol.children.as_deref() {
@@ -2615,7 +2675,7 @@ impl Document {
             self.document_highlights.remove(&view_id);
         } else {
             self.document_highlights
-                .insert(view_id, DocumentHighlights { ranges });
+                .insert(view_id, DocumentHighlights::from_ranges(ranges));
         }
     }
 
@@ -2628,10 +2688,13 @@ impl Document {
         self.document_highlight_controllers.clear();
     }
 
-    pub fn document_highlights(&self, view_id: ViewId) -> Option<&[std::ops::Range<usize>]> {
+    pub fn document_highlight_render_ranges(
+        &self,
+        view_id: ViewId,
+    ) -> Option<&[std::ops::Range<usize>]> {
         self.document_highlights
             .get(&view_id)
-            .map(|highlights| highlights.ranges.as_slice())
+            .map(|highlights| highlights.render_ranges.as_slice())
     }
 
     pub fn document_highlight_controller(&mut self, view_id: ViewId) -> &mut TaskController {
@@ -2716,6 +2779,7 @@ impl Display for FormatterError {
 #[cfg(test)]
 mod test {
     use arc_swap::ArcSwap;
+    use helix_core::Tendril;
 
     use super::*;
 
@@ -2744,6 +2808,59 @@ mod test {
             .try_set_selection(view, Selection::single(0, 4))
             .is_err());
         assert_eq!(doc.selection(view), &Selection::point(1));
+    }
+
+    #[test]
+    fn document_highlight_points_survive_edits_including_eof() {
+        let mut doc = test_document("ab");
+        let view = ViewId::default();
+        doc.set_selection(view, Selection::point(0));
+        doc.set_document_highlights(view, vec![0..1, 1..1, 1..1, 1..2, 2..2]);
+        assert_eq!(
+            doc.document_highlight_render_ranges(view),
+            Some(&[0..1, 1..2][..])
+        );
+
+        let transaction = Transaction::change(
+            doc.text(),
+            [
+                (0, 0, Some(Tendril::from("é"))),
+                (2, 2, Some(Tendril::from("🦀"))),
+            ]
+            .into_iter(),
+        );
+        assert!(doc.apply(&transaction, view));
+        assert_eq!(
+            doc.document_highlight_render_ranges(view),
+            Some(&[1..2, 2..4][..])
+        );
+        assert_eq!(
+            doc.document_highlights.get(&view).unwrap().ranges,
+            vec![
+                DocumentHighlightRange::Span(1..2),
+                DocumentHighlightRange::Point(2),
+                DocumentHighlightRange::Point(2),
+                DocumentHighlightRange::Span(2..4),
+                DocumentHighlightRange::Point(4),
+            ]
+        );
+    }
+
+    #[test]
+    fn breadcrumb_ranges_are_half_open_at_shared_boundaries_and_eof() {
+        let left = lsp::Range::new(lsp::Position::new(0, 0), lsp::Position::new(0, 2));
+        let right = lsp::Range::new(lsp::Position::new(0, 2), lsp::Position::new(0, 4));
+        let boundary = lsp::Position::new(0, 2);
+        assert!(!Document::position_in_breadcrumb_range(boundary, left));
+        assert!(Document::position_in_breadcrumb_range(boundary, right));
+        assert!(!Document::position_in_breadcrumb_range(
+            lsp::Position::new(0, 4),
+            right
+        ));
+        assert!(!Document::position_in_breadcrumb_range(
+            lsp::Position::new(0, 4),
+            lsp::Range::new(lsp::Position::new(0, 4), lsp::Position::new(0, 4))
+        ));
     }
 
     #[test]

@@ -75,6 +75,69 @@ async fn variable_expansion() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn edge_variable_expansion_at_points_and_eof() -> anyhow::Result<()> {
+    async fn check(input: &str, command: &str, expected: &str) -> anyhow::Result<()> {
+        let mut app = AppBuilder::new().with_input_text(input).build()?;
+        test_key_sequence(
+            &mut app,
+            Some(&format!("{command}<ret>")),
+            Some(&|app| {
+                let (status, severity) = app.editor.get_status().unwrap();
+                assert_eq!(*severity, Severity::Info);
+                assert_eq!(status.as_ref(), expected);
+            }),
+            false,
+        )
+        .await
+    }
+
+    check(
+        "é#[|]#🦀",
+        ":echo \"%{cursor_line}:%{cursor_column}:%{selection}\"",
+        "1:2:",
+    )
+    .await?;
+    check(
+        "é🦀#[|]#",
+        ":echo \"%{cursor_line}:%{cursor_column}:%{selection}\"",
+        "1:3:",
+    )
+    .await?;
+    check(
+        "a#[|]#\nβ",
+        ":echo \"%{cursor_line}:%{cursor_column}:%{selection}\"",
+        "1:2:",
+    )
+    .await?;
+    check(
+        "a\n#[|]#β",
+        ":echo \"%{cursor_line}:%{cursor_column}:%{selection}\"",
+        "2:1:",
+    )
+    .await?;
+    check(
+        "a\nβ#[|]#",
+        ":echo \"%{selection_line_start}:%{selection_line_end}\"",
+        "2:2",
+    )
+    .await?;
+    check(
+        "a#[|]#\nβ",
+        ":echo \"%{selection_line_start}:%{selection_line_end}\"",
+        "1:1",
+    )
+    .await?;
+    check(
+        "a\n#[|]#β",
+        ":echo \"%{selection_line_start}:%{selection_line_end}\"",
+        "2:2",
+    )
+    .await?;
+    check("#[é|]#🦀", ":echo %{selection}", "é").await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unicode_expansion() -> anyhow::Result<()> {
     test_statusline(r#":echo %u{20}"#, " ", Severity::Info).await?;
     test_statusline(r#":echo %u{0020}"#, " ", Severity::Info).await?;

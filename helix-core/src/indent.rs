@@ -1365,12 +1365,13 @@ pub fn indent_for_newline(
 pub fn get_scopes<'a>(syntax: Option<&'a Syntax>, text: RopeSlice, pos: usize) -> Vec<&'a str> {
     let mut scopes = Vec::new();
     if let Some(syntax) = syntax {
-        let pos = text.char_to_byte(pos) as u32;
-        let mut node = match syntax
-            .tree()
-            .root_node()
-            .descendant_for_byte_range(pos, pos)
-        {
+        let Ok(byte_range) = crate::selection::byte_range_at_edge(text, pos) else {
+            return scopes;
+        };
+        if byte_range.is_empty() {
+            return scopes;
+        }
+        let mut node = match syntax.descendant_for_byte_span(byte_range) {
             Some(node) => node,
             None => return scopes,
         };

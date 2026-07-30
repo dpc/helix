@@ -515,7 +515,43 @@ pub struct Syntax {
     inner: tree_house::Syntax,
 }
 
+/// A named descendant paired with the semantics of its parse-tree root.
+pub(crate) struct DescendantInLayer<'tree> {
+    /// The smallest usable descendant that does not represent a synthetic root.
+    node: Node<'tree>,
+    /// Whether parent traversal may select the parse-tree root.
+    root_kind: TreeRootKind,
+}
+
+/// Distinguishes the real document root from an injection tree's synthetic root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TreeRootKind {
+    /// The parse-tree root represents the full document and is a valid parent.
+    Document,
+    /// The parse-tree root may combine disjoint injected ranges and is not selectable.
+    SyntheticInjection,
+}
+
+impl<'tree> DescendantInLayer<'tree> {
+    /// Splits the descendant from its parent-traversal root invariant.
+    pub(crate) fn into_parts(self) -> (Node<'tree>, TreeRootKind) {
+        (self.node, self.root_kind)
+    }
+}
+
 const PARSE_TIMEOUT: Duration = Duration::from_millis(500); // half a second is pretty generous
+
+fn checked_byte_span(span: std::ops::Range<usize>) -> Option<(u32, u32, u32)> {
+    let inclusive_end = span.end.checked_sub(1)?;
+    if inclusive_end < span.start {
+        return None;
+    }
+    Some((
+        u32::try_from(span.start).ok()?,
+        u32::try_from(span.end).ok()?,
+        u32::try_from(inclusive_end).ok()?,
+    ))
+}
 
 impl Syntax {
     pub fn new(source: RopeSlice, language: Language, loader: &Loader) -> Result<Self, Error> {
@@ -553,6 +589,16 @@ impl Syntax {
         self.inner.layer_for_byte_range(start, end)
     }
 
+    /// Returns the smallest syntax layer owning a nonempty half-open byte span.
+    ///
+    /// Tree-house layer lookups take an inclusive end byte, while Helix ranges
+    /// are half-open. Keep that conversion centralized so a span ending at an
+    /// injection boundary remains owned by its final byte.
+    pub fn layer_for_byte_span(&self, span: std::ops::Range<usize>) -> Option<Layer> {
+        let (start, _, inclusive_end) = checked_byte_span(span)?;
+        Some(self.layer_for_byte_range(start, inclusive_end))
+    }
+
     /// Returns an iterator of layers which **fully include** the byte range `start..=end`.
     ///
     /// The iterator is non-empty and the root is always the first element. Other layers are
@@ -564,6 +610,16 @@ impl Syntax {
         end: u32,
     ) -> impl Iterator<Item = Layer> + use<'_> {
         self.inner.layers_for_byte_range(start, end)
+    }
+
+    /// Returns all syntax layers owning a nonempty half-open byte span.
+    pub fn layers_for_byte_span(
+        &self,
+        span: std::ops::Range<usize>,
+    ) -> impl Iterator<Item = Layer> + use<'_> {
+        checked_byte_span(span)
+            .into_iter()
+            .flat_map(|(start, _, inclusive_end)| self.layers_for_byte_range(start, inclusive_end))
     }
 
     pub fn root_language(&self) -> Language {
@@ -578,12 +634,67 @@ impl Syntax {
         self.inner.tree_for_byte_range(start, end)
     }
 
+    /// Returns the syntax tree owning a nonempty half-open byte span.
+    pub fn tree_for_byte_span(&self, span: std::ops::Range<usize>) -> Option<&Tree> {
+        let (start, _, inclusive_end) = checked_byte_span(span)?;
+        Some(self.tree_for_byte_range(start, inclusive_end))
+    }
+
     pub fn named_descendant_for_byte_range(&self, start: u32, end: u32) -> Option<Node<'_>> {
         self.inner.named_descendant_for_byte_range(start, end)
     }
 
     pub fn descendant_for_byte_range(&self, start: u32, end: u32) -> Option<Node<'_>> {
         self.inner.descendant_for_byte_range(start, end)
+    }
+
+    /// Returns the smallest named descendant covering a nonempty half-open byte span.
+    pub fn named_descendant_for_byte_span(&self, span: std::ops::Range<usize>) -> Option<Node<'_>> {
+        let (start, exclusive_end, inclusive_end) = checked_byte_span(span)?;
+        self.tree_for_byte_range(start, inclusive_end)
+            .root_node()
+            .named_descendant_for_byte_range(start, exclusive_end)
+    }
+
+    /// Returns a descendant and whether its tree root is the document root.
+    ///
+    /// Injection trees may combine disjoint ranges and use a synthetic byte-zero
+    /// root. Consumers climbing parents must stop before that synthetic root.
+    pub(crate) fn descendant_in_layer_for_byte_span(
+        &self,
+        span: std::ops::Range<usize>,
+    ) -> Option<DescendantInLayer<'_>> {
+        let (start, exclusive_end, inclusive_end) = checked_byte_span(span)?;
+        let effective_layer = self
+            .layers_for_byte_range(start, inclusive_end)
+            .filter(|&layer| self.layer(layer).tree().is_some())
+            .last()?;
+        let tree = self.layer(effective_layer).tree()?;
+        let mut node = tree
+            .root_node()
+            .named_descendant_for_byte_range(start, exclusive_end)?;
+        if effective_layer != self.root_layer() && node.parent().is_none() {
+            while let Some(child) = child_for_byte_range(&node, start..exclusive_end) {
+                node = child;
+            }
+            node.parent()?;
+        }
+        Some(DescendantInLayer {
+            node,
+            root_kind: if effective_layer == self.root_layer() {
+                TreeRootKind::Document
+            } else {
+                TreeRootKind::SyntheticInjection
+            },
+        })
+    }
+
+    /// Returns the smallest descendant covering a nonempty half-open byte span.
+    pub fn descendant_for_byte_span(&self, span: std::ops::Range<usize>) -> Option<Node<'_>> {
+        let (start, exclusive_end, inclusive_end) = checked_byte_span(span)?;
+        self.tree_for_byte_range(start, inclusive_end)
+            .root_node()
+            .descendant_for_byte_range(start, exclusive_end)
     }
 
     pub fn walk(&self) -> TreeCursor<'_> {
@@ -1250,6 +1361,110 @@ mod test {
         // The query used in this test case only captures the first line_comment node.
         // Determine if this behavior is intentional in tree-sitter.
         // test("multiple_nodes_grouped", 1..37);
+    }
+
+    #[test]
+    fn half_open_byte_spans_keep_the_final_injected_scalar_owned() {
+        let source = Rope::from("<script>é</script>");
+        let language = LOADER.language_for_name("html").unwrap();
+        let syntax = Syntax::new(source.slice(..), language, &LOADER).unwrap();
+        let start = source.to_string().find('é').unwrap();
+        let span = start..start + 'é'.len_utf8();
+
+        let layer = syntax.layer_for_byte_span(span.clone()).unwrap();
+        assert_eq!(
+            LOADER
+                .language(syntax.layer(layer).language)
+                .config()
+                .language_id,
+            "javascript"
+        );
+        let layers = syntax.layers_for_byte_span(span).collect::<Vec<_>>();
+        assert!(layers.contains(&layer));
+        assert_eq!(
+            syntax
+                .named_descendant_for_byte_span(start..start + 'é'.len_utf8())
+                .unwrap()
+                .kind(),
+            "identifier"
+        );
+        assert!(
+            syntax
+                .descendant_in_layer_for_byte_span(start..start + 'é'.len_utf8())
+                .unwrap()
+                .root_kind
+                != TreeRootKind::Document
+        );
+        assert!(
+            crate::indent::get_scopes(Some(&syntax), source.slice(..), 8).contains(&"identifier")
+        );
+        assert!(syntax
+            .layer_for_byte_span(source.len_bytes()..source.len_bytes())
+            .is_none());
+
+        let parent_source = Rope::from("<script>x</script><p>y</p>");
+        let parent_syntax = Syntax::new(parent_source.slice(..), language, &LOADER).unwrap();
+        let parent_pos = parent_source.to_string().find('y').unwrap();
+        assert!(
+            parent_syntax
+                .descendant_in_layer_for_byte_span(parent_pos..parent_pos + 1)
+                .unwrap()
+                .root_kind
+                == TreeRootKind::Document
+        );
+
+        let combined_source = Rope::from("/// one\n/// two");
+        let rust = LOADER.language_for_name("rust").unwrap();
+        let combined_syntax = Syntax::new(combined_source.slice(..), rust, &LOADER).unwrap();
+        for needle in ["one", "two"] {
+            let pos = combined_source.to_string().find(needle).unwrap();
+            assert!(combined_syntax
+                .descendant_in_layer_for_byte_span(pos..pos + 1)
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn checked_byte_spans_reject_unrepresentable_offsets() {
+        let max = u32::MAX as usize;
+        assert_eq!(
+            checked_byte_span(max - 1..max),
+            Some((u32::MAX - 1, u32::MAX, u32::MAX - 1))
+        );
+        assert_eq!(checked_byte_span(max..max + 1), None);
+        assert_eq!(checked_byte_span(1..1), None);
+    }
+
+    #[test]
+    fn descendant_root_kind_uses_effective_parsed_layer() {
+        let config: config::Configuration = toml::from_str(
+            r#"
+            [[language]]
+            name = "html"
+            scope = "text.html.basic"
+            file-types = []
+
+            [[language]]
+            name = "javascript"
+            scope = "source.js"
+            injection-regex = "javascript"
+            grammar = "missing-stage-four-test-grammar"
+            file-types = []
+            "#,
+        )
+        .unwrap();
+        let loader = Loader::new(config).unwrap();
+        let source = Rope::from("<script>x</script>");
+        let html = loader.language_for_name("html").unwrap();
+        let syntax = Syntax::new(source.slice(..), html, &loader).unwrap();
+        let pos = source.to_string().find('x').unwrap();
+        assert_eq!(
+            syntax
+                .descendant_in_layer_for_byte_span(pos..pos + 1)
+                .unwrap()
+                .root_kind,
+            TreeRootKind::Document
+        );
     }
 
     #[test]

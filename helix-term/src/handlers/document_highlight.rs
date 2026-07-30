@@ -69,34 +69,11 @@ fn document_highlight_ranges(
     offset_encoding: OffsetEncoding,
     highlights: Vec<lsp::DocumentHighlight>,
 ) -> Vec<std::ops::Range<usize>> {
-    let slice = text.slice(..);
-    let mut ranges: Vec<_> = highlights
+    highlights
         .into_iter()
         .filter_map(|highlight| lsp_range_to_range(text, highlight.range, offset_encoding))
-        .map(|range| range.min_width_1(slice))
-        .filter_map(|range| {
-            let start = range.from();
-            let end = range.to();
-            (start < end).then_some(start..end)
-        })
-        .collect();
-
-    ranges.sort_by_key(|a| (a.start, a.end));
-
-    let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(ranges.len());
-    for range in ranges {
-        if let Some(last) = merged.last_mut() {
-            if range.start <= last.end {
-                if range.end > last.end {
-                    last.end = range.end;
-                }
-                continue;
-            }
-        }
-        merged.push(range);
-    }
-
-    merged
+        .map(|range| range.from()..range.to())
+        .collect()
 }
 
 fn apply_document_highlights(
@@ -206,3 +183,6 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
         Ok(())
     });
 }
+
+#[cfg(test)]
+mod tests;

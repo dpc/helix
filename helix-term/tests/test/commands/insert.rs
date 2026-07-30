@@ -310,6 +310,29 @@ async fn insert_newline_continue_line_comment() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn open_lines_continue_comments_in_injected_language() -> anyhow::Result<()> {
+    for (key, expected) in [
+        ("o", "<script>\n// hi\n// \n</script>"),
+        ("O", "<script>\n// \n// hi\n</script>"),
+    ] {
+        test_key_sequence(
+            &mut AppBuilder::new()
+                .with_file("foo.html", None)
+                .with_input_text("<script>\n// h#[|]#i\n</script>")
+                .build()?,
+            Some(key),
+            Some(&|app| {
+                let (_, doc) = helix_view::current_ref!(app.editor);
+                assert_eq!(doc.text().to_string(), expected);
+            }),
+            false,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// NOTE: Language is set to markdown to check if the indentation is correct for the new line
 #[tokio::test(flavor = "multi_thread")]
 async fn test_open_above() -> anyhow::Result<()> {

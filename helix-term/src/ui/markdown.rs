@@ -19,6 +19,9 @@ use helix_view::{
     Theme,
 };
 
+#[cfg(feature = "integration")]
+static LAST_INTEGRATION_CONTENTS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 fn styled_multiline_text<'a>(text: &str, style: Style) -> Text<'a> {
     let spans: Vec<_> = text
         .lines()
@@ -167,6 +170,18 @@ impl Markdown {
             contents,
             config_loader,
         }
+    }
+
+    /// Takes the most recently recorded tree-sitter introspection popup source.
+    #[cfg(feature = "integration")]
+    pub fn take_integration_contents() -> Option<String> {
+        LAST_INTEGRATION_CONTENTS.lock().unwrap().take()
+    }
+
+    /// Records content that an asynchronous integration-tested hover will display.
+    #[cfg(feature = "integration")]
+    pub(crate) fn record_integration_contents(contents: &str) {
+        *LAST_INTEGRATION_CONTENTS.lock().unwrap() = Some(contents.to_owned());
     }
 
     pub fn parse(&self, theme: Option<&Theme>) -> tui::text::Text<'_> {

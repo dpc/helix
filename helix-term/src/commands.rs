@@ -1494,7 +1494,7 @@ fn goto_file_impl(cx: &mut Context, action: Action) {
         return;
     }
 
-    let paths: Vec<_> = if fallback_ranges.len() == 1 && fallback_ranges[0].len() == 1 {
+    let paths: Vec<_> = if fallback_ranges.len() == 1 && fallback_ranges[0].is_empty() {
         let selection = fallback_ranges[0];
         // Cap the search at roughly 1k bytes around the cursor.
         let lookaround = 1000;
@@ -1509,10 +1509,55 @@ fn goto_file_impl(cx: &mut Context, action: Action) {
         // we also allow paths that are next to the cursor (can be ambiguous but
         // rarely so in practice) so that gf on quoted/braced path works (not sure about this
         // but apparently that is how gf has worked historically in helix)
-        let path = find_paths(search_range, true)
-            .take_while(|range| search_start + range.start <= pos + 1)
-            .find(|range| pos <= search_start + range.end)
-            .map(|range| Cow::from(search_range.byte_slice(range)));
+        let relative_pos = pos - search_start;
+        let is_path_delimiter = |ch| matches!(ch, '\'' | '"' | '(' | ')' | '[' | ']' | '{' | '}');
+        let right_is_separator = text
+            .get_char(selection.head)
+            .is_some_and(|ch| matches!(ch, ';' | ','));
+        let left_is_separator = selection
+            .head
+            .checked_sub(1)
+            .and_then(|edge| text.get_char(edge))
+            .is_some_and(|ch| matches!(ch, ';' | ','));
+        let right_limit = text
+            .get_char(selection.head)
+            .filter(|&ch| is_path_delimiter(ch))
+            .map_or(relative_pos, |ch| relative_pos + ch.len_utf8());
+        let left_limit = selection
+            .head
+            .checked_sub(1)
+            .and_then(|edge| text.get_char(edge))
+            .filter(|&ch| is_path_delimiter(ch))
+            .map_or(relative_pos, |ch| relative_pos - ch.len_utf8());
+        let candidates: Vec<_> = find_paths(search_range, true)
+            .take_while(|range| range.start <= right_limit)
+            .filter_map(|mut range| {
+                if right_is_separator {
+                    if range.start == relative_pos {
+                        return None;
+                    }
+                    if range.start < relative_pos && relative_pos < range.end {
+                        range.end = relative_pos;
+                    }
+                }
+                if left_is_separator && range.start < relative_pos && relative_pos < range.end {
+                    range.start = relative_pos;
+                }
+                Some(range)
+            })
+            .filter(|range| left_limit <= range.end)
+            .collect();
+        let contained = candidates
+            .iter()
+            .find(|range| range.start <= relative_pos && relative_pos < range.end);
+        let right = candidates.iter().find(|range| range.start == right_limit);
+        let left = candidates.iter().find(|range| range.end == left_limit);
+        let path = if right_is_separator {
+            left.or(contained).or(right)
+        } else {
+            contained.or(right).or(left)
+        }
+        .map(|range| Cow::from(search_range.byte_slice(range.clone())));
         log::debug!("goto_file auto-detected path: {path:?}");
         let path = path.unwrap_or_else(|| selection.fragment(text));
         vec![path.into_owned()]
@@ -3944,10 +3989,14 @@ fn continued_line_comment_token<'a>(
 ) -> Option<&'a str> {
     if let Some(syntax) = doc.syntax() {
         let mut token = None;
-        for layer in syntax.layers_for_byte_range(byte_pos as u32, byte_pos as u32) {
-            let config = loader.language(syntax.layer(layer).language).config();
-            if let Some(tokens) = config.comment_tokens.as_ref() {
-                token = comment::get_comment_token(text, tokens, line_num).or(token);
+        let edge = text.try_byte_to_char(byte_pos).ok()?;
+        let byte_range = helix_core::selection::byte_range_at_edge(text, edge).ok()?;
+        if !byte_range.is_empty() {
+            for layer in syntax.layers_for_byte_span(byte_range) {
+                let config = loader.language(syntax.layer(layer).language).config();
+                if let Some(tokens) = config.comment_tokens.as_ref() {
+                    token = comment::get_comment_token(text, tokens, line_num).or(token);
+                }
             }
         }
         token
@@ -5613,14 +5662,15 @@ fn toggle_comments_impl(cx: &mut Context, comment_transaction: CommentTransactio
         .selection(view.id)
         .primary()
         .cursor(doc.text().slice(..));
-    let byte_pos = doc.text().char_to_byte(cursor);
+    let byte_range = helix_core::selection::byte_range_at_edge(doc.text().slice(..), cursor)
+        .expect("selection cursor must be within the document");
     // Resolve the comment tokens from the enclosing injection layer that owns the comment,
     // not the innermost layer at the cursor. Prefer the innermost layer that defines
     // *line* comment tokens, falling back to the innermost layer with block tokens.
     let mut line_layer = None;
     let mut block_layer = None;
     if let Some(syntax) = doc.syntax() {
-        for layer in syntax.layers_for_byte_range(byte_pos as u32, byte_pos as u32) {
+        for layer in syntax.layers_for_byte_span(byte_range) {
             let language = syntax.layer(layer).language;
             let config = loader.language(language).config();
             if config.comment_tokens.is_some() {
@@ -6027,10 +6077,9 @@ fn match_brackets(cx: &mut Context) {
 
     let selection = doc.selection(view.id).clone().transform(|range| {
         let pos = range.cursor(text_slice);
-        if let Some(matched_pos) = doc.syntax().map_or_else(
-            || match_brackets::find_matching_bracket_plaintext(text.slice(..), pos),
-            |syntax| match_brackets::find_matching_bracket_fuzzy(syntax, text.slice(..), pos),
-        ) {
+        if let Some(matched_pos) =
+            match_brackets::find_matching_bracket_fuzzy_at_edge(doc.syntax(), text_slice, pos)
+        {
             let target = Range::new(
                 matched_pos,
                 graphemes::next_grapheme_boundary(text_slice, matched_pos),

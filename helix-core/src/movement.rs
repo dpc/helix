@@ -9,7 +9,7 @@ use crate::{
     graphemes::{nth_next_grapheme_boundary, nth_prev_grapheme_boundary, prev_grapheme_boundary},
     line_ending::rope_is_line_ending,
     position::char_idx_at_visual_block_offset,
-    syntax,
+    syntax::{self, TreeRootKind},
     text_annotations::TextAnnotations,
     textobject::TextObject,
     tree_sitter::Node,
@@ -633,14 +633,25 @@ pub fn goto_treesitter_object(
     count: usize,
 ) -> Range {
     let get_range = move |range: Range| -> Option<Range> {
-        let byte_pos = slice.char_to_byte(range.cursor(slice));
+        let cursor = range.cursor(slice);
+        let byte_range = crate::selection::byte_range_at_edge(slice, cursor).ok()?;
+        let byte_pos = byte_range.start;
 
         // Walk the layer at the cursor with that language's own tree and textobject query.
         // Resolved per step so the motion can cross into and out of injected regions.
-        let layer = syntax.layer_for_byte_range(byte_pos as u32, byte_pos as u32);
-        let slice_tree = syntax
-            .tree_for_byte_range(byte_pos as u32, byte_pos as u32)
-            .root_node();
+        let (layer, slice_tree) = if byte_range.is_empty() {
+            (syntax.root_layer(), syntax.tree().root_node())
+        } else {
+            (
+                syntax
+                    .layer_for_byte_span(byte_range.clone())
+                    .expect("nonempty byte span must have a syntax layer"),
+                syntax
+                    .tree_for_byte_span(byte_range.clone())
+                    .expect("nonempty byte span must have a syntax tree")
+                    .root_node(),
+            )
+        };
         let textobject_query = loader.textobject_query(syntax.layer(layer).language);
 
         let cap_name = |t: TextObject| format!("{}.{}", object_name, t);
@@ -659,7 +670,7 @@ pub fn goto_treesitter_object(
                 .filter(|n| n.start_byte() > byte_pos)
                 .min_by_key(|n| (n.start_byte(), Reverse(n.end_byte())))?,
             Direction::Backward => nodes
-                .filter(|n| n.end_byte() < byte_pos)
+                .filter(|n| n.end_byte() <= byte_pos)
                 .max_by_key(|n| (n.end_byte(), Reverse(n.start_byte())))?,
         };
 
@@ -687,18 +698,39 @@ pub fn goto_treesitter_object(
 }
 
 fn treesitter_object_range_is_valid(text_len: usize, start_byte: usize, end_byte: usize) -> bool {
-    start_byte <= text_len && end_byte <= text_len
+    start_byte <= end_byte && end_byte <= text_len
 }
 
-fn find_parent_start<'tree>(node: &Node<'tree>) -> Option<Node<'tree>> {
+fn find_parent_start<'tree>(node: &Node<'tree>, root_kind: TreeRootKind) -> Option<Node<'tree>> {
     let start = node.start_byte();
     let mut node = Cow::Borrowed(node);
 
     while node.start_byte() >= start || !node.is_named() {
-        node = Cow::Owned(node.parent()?);
+        let parent = node.parent()?;
+        if root_kind == TreeRootKind::SyntheticInjection && parent.parent().is_none() {
+            return Some(node.into_owned());
+        }
+        node = Cow::Owned(parent);
     }
 
     Some(node.into_owned())
+}
+
+fn find_parent_end<'tree>(
+    mut node: Node<'tree>,
+    cursor_byte: u32,
+    root_kind: TreeRootKind,
+) -> Node<'tree> {
+    while node.end_byte() == cursor_byte {
+        let Some(parent) = node.parent() else {
+            break;
+        };
+        if root_kind == TreeRootKind::SyntheticInjection && parent.parent().is_none() {
+            break;
+        }
+        node = parent;
+    }
+    node
 }
 
 pub fn move_parent_node_end(
@@ -709,26 +741,37 @@ pub fn move_parent_node_end(
     movement: Movement,
 ) -> Selection {
     selection.transform(|range| {
-        let start_from = text.char_to_byte(range.from()) as u32;
-        let start_to = text.char_to_byte(range.to()) as u32;
-
-        let mut node = match syntax.named_descendant_for_byte_range(start_from, start_to) {
-            Some(node) => node,
-            None => {
-                log::debug!(
-                    "no descendant found for byte range: {} - {}",
-                    start_from,
-                    start_to
-                );
-                return range;
-            }
+        let byte_range = if range.is_empty() {
+            crate::selection::byte_range_at_edge(text, range.head)
+                .expect("selection cursor must be within the document")
+        } else {
+            let (start, end) = range.into_byte_range(text);
+            start..end
         };
-
+        if byte_range.is_empty() {
+            return range;
+        }
+        let (mut node, root_kind) =
+            match syntax.descendant_in_layer_for_byte_span(byte_range.clone()) {
+                Some(result) => result.into_parts(),
+                None => {
+                    log::debug!(
+                        "no descendant found for byte range: {} - {}",
+                        byte_range.start,
+                        byte_range.end
+                    );
+                    return range;
+                }
+            };
         let end_head = match dir {
             // moving forward, we always want to move one past the end of the
             // current node, so use the end byte of the current node, which is an exclusive
             // end of the range
-            Direction::Forward => text.byte_to_char(node.end_byte() as usize),
+            Direction::Forward => {
+                let cursor = range.cursor(text);
+                node = find_parent_end(node, text.char_to_byte(cursor) as u32, root_kind);
+                text.byte_to_char(node.end_byte() as usize)
+            }
 
             // moving backward, we want the cursor to land on the start char of
             // the current node, or if it is already at the start of a node, to traverse up to
@@ -738,7 +781,7 @@ pub fn move_parent_node_end(
 
                 // if we're already on the beginning, look up to the parent
                 if end_head == range.cursor(text) {
-                    node = find_parent_start(&node).unwrap_or(node);
+                    node = find_parent_start(&node, root_kind).unwrap_or(node);
                     text.byte_to_char(node.start_byte() as usize)
                 } else {
                     end_head
@@ -756,9 +799,10 @@ fn parent_node_end_range(range: Range, destination: usize, movement: Movement) -
 
 #[cfg(test)]
 mod test {
+    use once_cell::sync::Lazy;
     use ropey::Rope;
 
-    use crate::{coords_at_pos, pos_at_coords};
+    use crate::{coords_at_pos, pos_at_coords, syntax::Loader};
 
     use super::*;
 
@@ -775,6 +819,77 @@ mod test {
         パーティーへ行かないか\n\
         The text above is Japanese\n\
     ";
+
+    static SYNTAX_LOADER: Lazy<Loader> = Lazy::new(crate::config::default_lang_loader);
+
+    #[test]
+    fn parent_node_uses_injected_tree_for_final_scalars() {
+        for scalar in ["x", "é"] {
+            let source = Rope::from(format!("<script>{scalar}</script>"));
+            let language = SYNTAX_LOADER.language_for_name("html").unwrap();
+            let syntax = Syntax::new(source.slice(..), language, &SYNTAX_LOADER).unwrap();
+            let start = "<script>".chars().count();
+            let end = start + 1;
+
+            assert_eq!(
+                move_parent_node_end(
+                    &syntax,
+                    source.slice(..),
+                    Selection::point(start),
+                    Direction::Forward,
+                    Movement::Move,
+                ),
+                Selection::single(start, end)
+            );
+            assert_eq!(
+                move_parent_node_end(
+                    &syntax,
+                    source.slice(..),
+                    Selection::single(end, start),
+                    Direction::Backward,
+                    Movement::Move,
+                ),
+                Selection::point(start)
+            );
+        }
+
+        let source = Rope::from("<script>x</script><p>y</p>");
+        let language = SYNTAX_LOADER.language_for_name("html").unwrap();
+        let syntax = Syntax::new(source.slice(..), language, &SYNTAX_LOADER).unwrap();
+        let start = source.to_string().find('y').unwrap();
+        let mut selection = Selection::point(start);
+        for _ in 0..8 {
+            selection = move_parent_node_end(
+                &syntax,
+                source.slice(..),
+                selection,
+                Direction::Backward,
+                Movement::Move,
+            );
+        }
+        assert_eq!(selection.primary().head, 0);
+
+        let mut selection = Selection::point(start);
+        for _ in 0..8 {
+            selection = move_parent_node_end(
+                &syntax,
+                source.slice(..),
+                selection,
+                Direction::Forward,
+                Movement::Move,
+            );
+        }
+        assert_eq!(selection.primary().head, source.len_chars());
+
+        let combined = Rope::from("/// one\nfn gap() {}\n/// two");
+        let rust = SYNTAX_LOADER.language_for_name("rust").unwrap();
+        let combined_syntax = Syntax::new(combined.slice(..), rust, &SYNTAX_LOADER).unwrap();
+        let first_comment_end = combined.to_string().find('\n').unwrap();
+        let start = combined.to_string().find("one").unwrap();
+        assert!(combined_syntax
+            .descendant_in_layer_for_byte_span(start..first_comment_end)
+            .is_none());
+    }
 
     #[test]
     fn test_vertical_move() {

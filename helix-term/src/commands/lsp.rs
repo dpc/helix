@@ -673,6 +673,18 @@ pub fn code_action(cx: &mut Context) {
     });
 }
 
+fn range_owns_diagnostic(range: helix_core::Range, diagnostic: helix_core::Range) -> bool {
+    if range.is_empty() {
+        if diagnostic.is_empty() {
+            range.head == diagnostic.head
+        } else {
+            diagnostic.from() <= range.head && range.head < diagnostic.to()
+        }
+    } else {
+        range.overlaps(&diagnostic)
+    }
+}
+
 // Extracting this to a type alias would require boxing this future
 #[allow(clippy::type_complexity)]
 pub(crate) fn code_actions_for_range(
@@ -699,7 +711,10 @@ pub(crate) fn code_actions_for_range(
                     .diagnostics()
                     .iter()
                     .filter(|&diag| {
-                        range.overlaps(&helix_core::Range::new(diag.range.start, diag.range.end))
+                        range_owns_diagnostic(
+                            range,
+                            helix_core::Range::new(diag.range.start, diag.range.end),
+                        )
                     })
                     .map(|diag| diagnostic_to_lsp_diagnostic(doc.text(), diag, offset_encoding))
                     .collect(),
@@ -1152,19 +1167,23 @@ pub fn hover(cx: &mut Context) {
     });
 }
 
+fn rename_prefill(text: helix_core::RopeSlice, primary_selection: helix_core::Range) -> String {
+    if !primary_selection.is_empty() {
+        primary_selection
+    } else {
+        use helix_core::textobject::{textobject_word, TextObject};
+        textobject_word(text, primary_selection, TextObject::Inside, 1, false)
+    }
+    .fragment(text)
+    .into()
+}
+
 pub fn rename_symbol(cx: &mut Context) {
     fn get_prefill_from_word_boundary(editor: &Editor) -> String {
         let (view, doc) = current_ref!(editor);
         let text = doc.text().slice(..);
         let primary_selection = doc.selection(view.id).primary();
-        if primary_selection.len() > 1 {
-            primary_selection
-        } else {
-            use helix_core::textobject::{textobject_word, TextObject};
-            textobject_word(text, primary_selection, TextObject::Inside, 1, false)
-        }
-        .fragment(text)
-        .into()
+        rename_prefill(text, primary_selection)
     }
 
     fn get_prefill_from_lsp_response(
